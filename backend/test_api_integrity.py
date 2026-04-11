@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Smoke-test the local console API end to end with isolated temp files."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from urllib import error, request
+
+
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BASE_DIR.parent
+API_SERVER = BASE_DIR / "api_server.py"
+HOST = "127.0.0.1"
+PORT = 8765
+
+
+def api_request(method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
+    body = None
+    headers = {}
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = request.Request(
+        url=f"http://{HOST}:{PORT}{path}",
+        method=method,
+        data=body,
+        headers=headers,
+    )
+
+    try:
+        with request.urlopen(req, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def wait_for_server() -> None:
+    deadline = time.time() + 10
+    last_error = ""
+    while time.time() < deadline:
+        try:
+            status, payload = api_request("GET", "/api/health")
+            if status == 200 and payload.get("ok") is True:
+                return
+        except Exception as exc:  # pragma: no cover - transient startup path
+            last_error = str(exc)
+        time.sleep(0.2)
+    raise RuntimeError(f"API server did not become ready in time. Last error: {last_error}")
+
+
+def assert_keys(payload: dict, keys: list[str], label: str) -> None:
+    missing = [key for key in keys if key not in payload]
+    if missing:
+        raise AssertionError(f"{label} missing keys: {missing}")
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="dingtalk-api-test-") as temp_dir:
+        temp_path = Path(temp_dir)
+        config_file = temp_path / "console-config.json"
+        state_file = temp_path / "scheduler.state.json"
+        process_file = temp_path / "scheduler.process.json"
+        log_file = temp_path / "scheduler.log"
+        err_log_file = temp_path / "scheduler.err.log"
+        server_log = temp_path / "api-server.log"
+
+        config_file.write_text(
+            json.dumps(
+                {
+                    "serial": "",
+                    "package": "com.alibaba.android.rimet",
+                    "app_label": "钉钉",
+                    "delay_after_launch": 5,
+                    "poll_interval": 5,
+                    "scrcpy_launch_cooldown": 15,
+                    "state_file": str(state_file),
+                    "workday_api_url": "https://holiday.dreace.top?date={date}",
+                    "workday_api_timeout_ms": 5000,
+                    "enable_scrcpy_watch": False,
+                    "notify_on_success": False,
+                    "enable_workday_check": True,
+                    "adb_bin": "",
+                    "scrcpy_bin": "",
+                    "windows": {
+                        "morning": {"start": "09:05", "end": "09:10"},
+                        "evening": {"start": "18:05", "end": "18:15"},
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["DINGTALK_CONSOLE_CONFIG_FILE"] = str(config_file)
+        env["DINGTALK_CONSOLE_PROCESS_FILE"] = str(process_file)
+        env["DINGTALK_CONSOLE_LOG_FILE"] = str(log_file)
+        env["DINGTALK_CONSOLE_ERR_LOG_FILE"] = str(err_log_file)
+
+        with server_log.open("w", encoding="utf-8") as output:
+            server = subprocess.Popen(
+                [sys.executable, str(API_SERVER), "--host", HOST, "--port", str(PORT)],
+                cwd=str(PROJECT_DIR),
+                env=env,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+            )
+
+        try:
+            wait_for_server()
+
+            status, payload = api_request("GET", "/api/health")
+            assert status == 200 and payload.get("ok") is True
+            print("health: ok")
+
+            status, payload = api_request("GET", "/api/dashboard")
+            assert status == 200 and payload.get("ok") is True
+            dashboard = payload["dashboard"]
+            assert_keys(
+                dashboard,
+                [
+                    "alerts",
+                    "config",
+                    "device",
+                    "logs",
+                    "scheduleSummary",
+                    "scheduler",
+                    "statusTags",
+                    "timeline",
+                    "toggles",
+                    "windows",
+                    "workday",
+                ],
+                "dashboard",
+            )
+            print("dashboard: ok")
+
+            status, payload = api_request(
+                "POST",
+                "/api/config",
+                {
+                    "config": {
+                        "serial": "",
+                        "package": "com.alibaba.android.rimet",
+                        "app_label": "钉钉",
+                        "delay_after_launch": 7,
+                        "poll_interval": 9,
+                        "scrcpy_launch_cooldown": 22,
+                        "state_file": str(state_file),
+                        "workday_api_url": "https://holiday.dreace.top?date={date}",
+                        "workday_api_timeout_ms": 6500,
+                        "enable_scrcpy_watch": True,
+                        "notify_on_success": True,
+                        "enable_workday_check": False,
+                        "adb_bin": "",
+                        "scrcpy_bin": "",
+                        "windows": {
+                            "morning": {"start": "09:06", "end": "09:11"},
+                            "evening": {"start": "18:06", "end": "18:16"},
+                        },
+                    },
+                    "nextRuns": {
+                        "morning": "09:07:09",
+                        "evening": "18:07:11",
+                    },
+                },
+            )
+            assert status == 200 and payload.get("ok") is True
+            updated_config = payload["dashboard"]["config"]
+            assert updated_config["enable_scrcpy_watch"] is True
+            assert updated_config["notify_on_success"] is True
+            assert updated_config["enable_workday_check"] is False
+            assert updated_config["poll_interval"] == 9
+            assert payload["dashboard"]["windows"][0]["start"] == "09:06"
+            print("config save: ok")
+
+            status, payload = api_request("POST", "/api/actions/reroll", {})
+            assert status == 200 and payload.get("ok") is True
+            assert len(payload["dashboard"]["windows"]) == 2
+            print("reroll: ok")
+
+            status, payload = api_request("POST", "/api/actions/doctor", {})
+            assert status in {200, 500}
+            assert "ok" in payload
+            assert "message" in payload or "output" in payload
+            print(f"doctor: ok ({status})")
+
+            status, payload = api_request("POST", "/api/actions/run-once", {})
+            assert status in {200, 400, 409, 500}
+            assert "ok" in payload
+            print(f"run-once: ok ({status})")
+
+            status, payload = api_request("POST", "/api/actions/start", {"mode": "run"})
+            assert status == 200 and payload.get("ok") is True
+            print("start: ok")
+
+            time.sleep(0.6)
+            status, payload = api_request("POST", "/api/actions/stop", {})
+            assert status in {200, 409}
+            assert "ok" in payload
+            print(f"stop: ok ({status})")
+
+            status, payload = api_request("POST", "/api/actions/start", {"mode": "bad-mode"})
+            assert status == 400 and payload.get("ok") is False
+            print("start invalid mode: ok")
+
+        finally:
+            if server.poll() is None:
+                server.terminate()
+                try:
+                    server.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    server.kill()
+
+        print("api integrity: passed")
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

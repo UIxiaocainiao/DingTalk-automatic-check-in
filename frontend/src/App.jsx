@@ -5,10 +5,8 @@ import {
   BellRing,
   Bot,
   Bug,
-  CalendarRange,
   CheckCheck,
   CirclePlay,
-  Clock3,
   FileClock,
   FolderCog,
   Gauge,
@@ -25,7 +23,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { SplitText as GSAPSplitText } from "gsap/SplitText";
 import { toast } from "sonner";
@@ -35,6 +33,16 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { Input } from "./components/ui/input";
 import { Separator } from "./components/ui/separator";
+import { TimePicker } from "./components/ui/time-picker";
+import {
+  fetchDashboard,
+  rerollSchedule,
+  runDoctor,
+  runOnce,
+  saveConfig,
+  startScheduler,
+  stopScheduler,
+} from "./lib/api";
 import { cn } from "./lib/utils";
 
 gsap.registerPlugin(GSAPSplitText);
@@ -43,27 +51,6 @@ const navItems = [
   { id: "overview", label: "监控总览", icon: Gauge },
   { id: "actions", label: "任务配置", icon: FolderCog },
   { id: "logs", label: "告警日志", icon: BellRing },
-];
-
-const priorities = [
-  {
-    title: "建议先处理",
-    value: "先确认下午窗口，再决定是否试运行",
-    note: "减少在错误时间窗口内触发动作的风险。",
-    icon: CheckCheck,
-  },
-  {
-    title: "当前风险",
-    value: "工作日接口依赖在线",
-    note: "接口异常会直接影响任务判断，属于优先关注项。",
-    icon: TriangleAlert,
-  },
-  {
-    title: "最近变更",
-    value: "轮询间隔 30 秒",
-    note: "高频配置刚改过，保存后应立即自检。",
-    icon: BellRing,
-  },
 ];
 
 const quickChecklist = [
@@ -75,87 +62,155 @@ const quickChecklist = [
 const configGroups = [
   {
     title: "设备与应用",
+    eyebrow: "Device",
+    summary: "绑定设备、目标应用与状态文件落点",
+    icon: Smartphone,
+    badgeClass:
+      "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
     description: "先配置识别对象，再校验状态文件落点。",
     fields: [
-      { label: "设备序列号 serial", value: "emulator-5554", helper: "用于绑定具体 ADB 设备" },
-      { label: "应用包名 package", value: "com.alibaba.android.rimet" },
-      { label: "应用名称 app_label", value: "钉钉" },
-      { label: "状态文件路径 state_file", value: "./runtime/state.json" },
+      {
+        label: "设备序列号 serial",
+        key: "serial",
+        defaultValue: "",
+        helper: "用于绑定具体 ADB 设备；留空时会自动选择唯一在线设备。",
+      },
+      { label: "应用包名 package", key: "package", defaultValue: "com.alibaba.android.rimet" },
+      { label: "应用名称 app_label", key: "app_label", defaultValue: "钉钉" },
+      {
+        label: "状态文件路径 state_file",
+        key: "state_file",
+        defaultValue: "backend/logs/dingtalk-random-scheduler.state.json",
+      },
     ],
   },
   {
     title: "调度与服务",
+    eyebrow: "Runtime",
+    summary: "控制轮询节奏、工作日判断与接口容错",
+    icon: SquareTerminal,
+    badgeClass:
+      "border-sky-500/20 bg-sky-500/10 text-sky-700 dark:text-sky-300",
     description: "控制节奏、工作日判断与接口容错。",
     fields: [
-      { label: "启动后停留时长", value: "4 秒" },
-      { label: "轮询间隔 poll_interval", value: "30 秒", helper: "建议设置下限保护，避免过高轮询" },
-      { label: "工作日接口地址", value: "https://holiday.dreace.top?date=YYYY-MM-DD" },
-      { label: "接口超时时间", value: "3000 ms" },
+      { label: "启动后停留时长", key: "delay_after_launch", defaultValue: "5 秒" },
+      {
+        label: "轮询间隔 poll_interval",
+        key: "poll_interval",
+        defaultValue: "5 秒",
+        helper: "最小值为 1 秒，建议结合设备稳定性谨慎调整。",
+      },
+      {
+        label: "工作日接口地址",
+        key: "workday_api_url",
+        defaultValue: "https://holiday.dreace.top?date={date}",
+      },
+      { label: "接口超时时间", key: "workday_api_timeout_ms", defaultValue: "5000 ms" },
     ],
   },
 ];
 
-const toggles = [
-  "scrcpy 观察模式 已开启",
-  "成功通知 已开启",
-  "工作日校验 已开启",
-];
-
 const windowsData = [
   {
+    name: "morning",
     title: "上午窗口",
+    eyebrow: "AM Window",
+    accentClass:
+      "border-amber-200/70 bg-amber-50/40 dark:border-amber-900/40 dark:bg-amber-950/10",
+    badgeClass:
+      "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    icon: SunMedium,
     note: "系统会在这个区间内随机抽取一个执行时刻。",
-    start: "08:35",
-    end: "08:55",
-    selected: "08:43:00",
-    completed: "2026-04-09",
+    defaultStart: "09:05",
+    defaultEnd: "09:10",
+    defaultSelected: "09:06:00",
   },
   {
+    name: "evening",
     title: "下午窗口",
+    eyebrow: "PM Window",
+    accentClass:
+      "border-sky-200/70 bg-sky-50/40 dark:border-sky-900/40 dark:bg-sky-950/10",
+    badgeClass:
+      "border-sky-500/20 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+    icon: MoonStar,
     note: "随机逻辑与上午一致，支持独立控制。",
-    start: "18:05",
-    end: "18:30",
-    selected: "18:17:00",
-    completed: "2026-04-09",
+    defaultStart: "18:05",
+    defaultEnd: "18:15",
+    defaultSelected: "18:08:00",
   },
 ];
 
 const actions = [
-  { label: "一键自检", style: "default", icon: Stethoscope },
-  { label: "查看排期", style: "secondary", icon: FileClock },
-  { label: "刷新设备状态", style: "secondary", icon: RefreshCw },
-  { label: "启动任务", style: "secondary", icon: Play },
-  { label: "停止任务", style: "ghost", icon: CirclePlay },
-  { label: "调试模式", style: "secondary", icon: Bug },
-  { label: "试运行一次", style: "secondary", icon: Bot },
+  {
+    label: "一键自检",
+    style: "default",
+    icon: Stethoscope,
+    group: "primary",
+    note: "先确认 adb、设备和工作日接口状态。",
+  },
+  {
+    label: "刷新设备状态",
+    style: "secondary",
+    icon: RefreshCw,
+    group: "primary",
+    note: "重新读取当前设备连接、授权和日志状态。",
+  },
+  {
+    label: "试运行一次",
+    style: "secondary",
+    icon: Bot,
+    group: "primary",
+    note: "不改排期，直接验证一次动作链路。",
+  },
+  {
+    label: "启动任务",
+    style: "secondary",
+    icon: Play,
+    group: "runtime",
+    note: "以标准 run 模式托管调度进程。",
+  },
+  {
+    label: "停止任务",
+    style: "ghost",
+    icon: CirclePlay,
+    group: "runtime",
+    note: "停止当前受控调度进程。",
+  },
+  {
+    label: "调试模式",
+    style: "secondary",
+    icon: Bug,
+    group: "runtime",
+    note: "以 debug 模式启动，便于观察运行状态。",
+  },
+  {
+    label: "查看排期",
+    style: "secondary",
+    icon: FileClock,
+    group: "support",
+    note: "快速定位到上午、下午窗口的详细设置。",
+  },
 ];
 
-const statusTags = ["任务 运行中", "scrcpy 运行中", "今天是工作日"];
-
-const logs = [
+const toggleDefinitions = [
   {
-    time: "08:43",
-    title: "上午自动打卡执行完成",
-    detail: "启动应用 > 进入工作台 > 完成打卡 > 发送通知",
-    status: "成功",
+    label: "scrcpy 观察模式",
+    key: "enable_scrcpy_watch",
+    enabledNote: "设备重新连接后，会尝试自动拉起 scrcpy。",
+    disabledNote: "只保留调度行为，不自动拉起 scrcpy。",
   },
   {
-    time: "07:58",
-    title: "工作日接口检查",
-    detail: "GET /workday 返回 true，响应耗时 182ms",
-    status: "成功",
+    label: "成功通知",
+    key: "notify_on_success",
+    enabledNote: "动作执行完成后发送 macOS 通知。",
+    disabledNote: "执行成功后不发送桌面通知。",
   },
   {
-    time: "昨天 18:09",
-    title: "下午自动打卡执行完成",
-    detail: "随机窗口命中 18:17，动作链路整体正常",
-    status: "成功",
-  },
-  {
-    time: "昨天 07:30",
-    title: "ADB 授权提醒",
-    detail: "检测到设备重新连接，授权状态恢复正常",
-    status: "已处理",
+    label: "工作日校验",
+    key: "enable_workday_check",
+    enabledNote: "执行前通过在线接口判断是否为工作日。",
+    disabledNote: "忽略工作日接口，每天都按本地排期执行。",
   },
 ];
 
@@ -168,31 +223,70 @@ const guards = [
   ["关键配置变更二次确认", "serial / package / state_file 变更需确认", true],
 ];
 
-const timeline = [
-  "07:58 工作日校验通过",
-  "08:43 上午随机执行完成",
-  "17:50 设备状态复检正常",
-  "18:17 下午随机计划待执行",
-];
+const CONFIG_FIELD_MAP = Object.fromEntries(
+  configGroups.flatMap((group) => group.fields.map((field) => [field.label, field.key])),
+);
+const TOGGLE_FIELD_MAP = Object.fromEntries(toggleDefinitions.map((item) => [item.label, item.key]));
 
 const initialConfigState = Object.fromEntries(
-  configGroups.flatMap((group) => group.fields.map((field) => [field.label, field.value])),
+  configGroups.flatMap((group) => group.fields.map((field) => [field.label, field.defaultValue])),
+);
+
+const initialToggleState = Object.fromEntries(
+  toggleDefinitions.map((item) => [item.label, item.key === "enable_workday_check"]),
 );
 
 const initialWindowState = Object.fromEntries(
   windowsData.flatMap((item) => [
-    [`${item.title}-start`, item.start],
-    [`${item.title}-end`, item.end],
-    [`${item.title}-selected`, item.selected],
-    [`${item.title}-custom`, item.selected],
-    [`${item.title}-completed`, item.completed],
+    [`${item.title}-start`, item.defaultStart],
+    [`${item.title}-end`, item.defaultEnd],
+    [`${item.title}-selected`, item.defaultSelected],
+    [`${item.title}-custom`, item.defaultSelected],
+    [`${item.title}-completed`, "未执行"],
   ]),
 );
 
 function statusTone(value) {
+  if (/(失败|异常|错误|未连接|未授权|不可用|停止)/.test(value)) return "destructive";
   if (/(成功|已连接|已授权|已校验|运行中|工作日|已同步)/.test(value)) return "success";
-  if (/(提醒|未保存|处理中|待执行|试运行|重新抽取|风险)/.test(value)) return "warning";
+  if (/(提醒|未保存|处理中|待执行|试运行|重新抽取|风险|待处理|调试中)/.test(value)) return "warning";
   return "secondary";
+}
+
+function toneLabel(tone) {
+  if (tone === "success") return "正常";
+  if (tone === "warning") return "关注";
+  if (tone === "destructive") return "异常";
+  return "信息";
+}
+
+function toneClasses(tone) {
+  if (tone === "success") {
+    return {
+      panel: "border-emerald-200/70 bg-emerald-50/60 dark:border-emerald-900/40 dark:bg-emerald-950/10",
+      soft: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+      icon: "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+    };
+  }
+  if (tone === "warning") {
+    return {
+      panel: "border-amber-200/70 bg-amber-50/60 dark:border-amber-900/40 dark:bg-amber-950/10",
+      soft: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+      icon: "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    };
+  }
+  if (tone === "destructive") {
+    return {
+      panel: "border-red-200/70 bg-red-50/60 dark:border-red-900/40 dark:bg-red-950/10",
+      soft: "bg-red-500/10 text-red-700 dark:text-red-300",
+      icon: "border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-300",
+    };
+  }
+  return {
+    panel: "border-border bg-muted/20",
+    soft: "bg-muted text-muted-foreground",
+    icon: "border-border bg-background text-muted-foreground",
+  };
 }
 
 function parseNumber(value) {
@@ -210,6 +304,90 @@ function parseTimeToSeconds(value) {
 
   if (hour > 23 || minute > 59 || second > 59) return null;
   return hour * 3600 + minute * 60 + second;
+}
+
+function buildConfigStateFromDashboard(dashboard) {
+  if (!dashboard?.config) return { ...initialConfigState };
+
+  const config = dashboard.config;
+  return Object.fromEntries(
+    configGroups.flatMap((group) =>
+      group.fields.map((field) => {
+        let value = config[field.key];
+        if (field.key === "delay_after_launch") value = `${value} 秒`;
+        if (field.key === "poll_interval") value = `${value} 秒`;
+        if (field.key === "workday_api_timeout_ms") value = `${value} ms`;
+        return [field.label, String(value ?? field.defaultValue ?? "")];
+      }),
+    ),
+  );
+}
+
+function buildWindowStateFromDashboard(dashboard) {
+  if (!dashboard?.windows?.length) return { ...initialWindowState };
+
+  const nextState = { ...initialWindowState };
+  dashboard.windows.forEach((item) => {
+    nextState[`${item.title}-start`] = item.start;
+    nextState[`${item.title}-end`] = item.end;
+    nextState[`${item.title}-selected`] = item.selected;
+    nextState[`${item.title}-custom`] = item.selected;
+    nextState[`${item.title}-completed`] = item.completed;
+  });
+  return nextState;
+}
+
+function buildToggleStateFromDashboard(dashboard) {
+  if (!dashboard?.config) return { ...initialToggleState };
+
+  const config = dashboard.config;
+  return Object.fromEntries(
+    toggleDefinitions.map((item) => [item.label, Boolean(config[item.key])]),
+  );
+}
+
+function buildConfigPayload(configValues, windowValues, toggleValues, baseConfig = {}) {
+  const payload = {
+    ...baseConfig,
+  };
+  Object.entries(CONFIG_FIELD_MAP).forEach(([label, key]) => {
+    const rawValue = String(configValues[label] ?? "").trim();
+    if (key === "delay_after_launch" || key === "poll_interval" || key === "workday_api_timeout_ms") {
+      payload[key] = parseNumber(rawValue) ?? 0;
+      return;
+    }
+    payload[key] = rawValue;
+  });
+
+  payload.windows = Object.fromEntries(
+    windowsData.map((item) => [
+      item.name,
+      {
+        start: String(windowValues[`${item.title}-start`] ?? "").trim(),
+        end: String(windowValues[`${item.title}-end`] ?? "").trim(),
+      },
+    ]),
+  );
+
+  if (Object.prototype.hasOwnProperty.call(payload, "serial")) {
+    payload.serial = payload.serial.trim();
+  }
+
+  Object.entries(TOGGLE_FIELD_MAP).forEach(([label, key]) => {
+    payload[key] = Boolean(toggleValues[label]);
+  });
+
+  return payload;
+}
+
+function buildNextRunsPayload(windowValues) {
+  return Object.fromEntries(
+    windowsData.map((item) => [item.name, String(windowValues[`${item.title}-custom`] ?? "").trim()]),
+  );
+}
+
+function getWindowFromDashboard(dashboard, name) {
+  return dashboard?.windows?.find((item) => item.name === name);
 }
 
 function App() {
@@ -231,8 +409,13 @@ function App() {
   const [topbarTitle, setTopbarTitle] = useState("监控总览与执行态势");
   const [topbarTone, setTopbarTone] = useState("overview");
   const [pendingAction, setPendingAction] = useState("");
+  const [dashboard, setDashboard] = useState(null);
+  const [apiError, setApiError] = useState("");
+  const [dashboardReady, setDashboardReady] = useState(false);
   const [configValues, setConfigValues] = useState(initialConfigState);
   const [savedConfigValues, setSavedConfigValues] = useState(initialConfigState);
+  const [toggleValues, setToggleValues] = useState(initialToggleState);
+  const [savedToggleValues, setSavedToggleValues] = useState(initialToggleState);
   const [windowValues, setWindowValues] = useState(initialWindowState);
   const [savedWindowValues, setSavedWindowValues] = useState(initialWindowState);
 
@@ -253,61 +436,160 @@ function App() {
     [],
   );
 
-  const scheduleSummary = useMemo(
-    () => `${windowValues["上午窗口-selected"]} / ${windowValues["下午窗口-selected"]}`,
-    [windowValues],
-  );
-
-  const metrics = useMemo(
-    () => [
-      {
-        label: "当前任务状态",
-        value: "运行中",
-        note: "调度器已激活，等待下一个随机时间",
-        icon: Activity,
-      },
-      {
-        label: "设备状态",
-        value: "已连接",
-        note: "serial: emulator-5554",
-        icon: Smartphone,
-      },
-      {
-        label: "下一次上午执行",
-        value: windowValues["上午窗口-selected"],
-        note: "默认按时间范围抽取，也可以手动精确指定到秒。",
-        icon: AlarmClockCheck,
-      },
-      {
-        label: "最近成功执行",
-        value: "昨天 18:09",
-        note: "最近一次工作日校验正常",
-        icon: BadgeCheck,
-      },
-    ],
-    [windowValues],
-  );
-
-  const statusRows = useMemo(
-    () => [
-      ["设备状态", "已连接 / 已授权", true],
-      ["上午下一次执行时间", `2026-04-10 ${windowValues["上午窗口-selected"]}`],
-      ["下午下一次执行时间", `2026-04-10 ${windowValues["下午窗口-selected"]}`],
-      ["最近一次成功执行时间", "2026-04-09 18:09"],
-      ["最近一次工作日校验结果", "HTTP 200 / true"],
-    ],
-    [windowValues],
-  );
-
   const dirtyCount = useMemo(() => {
     const configDirty = Object.keys(configValues).filter(
       (key) => configValues[key] !== savedConfigValues[key],
     ).length;
+    const toggleDirty = Object.keys(toggleValues).filter(
+      (key) => toggleValues[key] !== savedToggleValues[key],
+    ).length;
     const windowDirty = Object.keys(windowValues).filter(
       (key) => windowValues[key] !== savedWindowValues[key],
     ).length;
-    return configDirty + windowDirty;
-  }, [configValues, savedConfigValues, windowValues, savedWindowValues]);
+    return configDirty + toggleDirty + windowDirty;
+  }, [configValues, savedConfigValues, toggleValues, savedToggleValues, windowValues, savedWindowValues]);
+
+  const hydrateDashboard = useCallback((nextDashboard, preserveDraft = false) => {
+    if (!nextDashboard) return;
+
+    const nextConfigState = buildConfigStateFromDashboard(nextDashboard);
+    const nextToggleState = buildToggleStateFromDashboard(nextDashboard);
+    const nextWindowState = buildWindowStateFromDashboard(nextDashboard);
+
+    setDashboard(nextDashboard);
+    setApiError("");
+    setSavedConfigValues(nextConfigState);
+    setSavedToggleValues(nextToggleState);
+    setSavedWindowValues(nextWindowState);
+    if (!preserveDraft) {
+      setConfigValues(nextConfigState);
+      setToggleValues(nextToggleState);
+      setWindowValues(nextWindowState);
+    }
+    setDashboardReady(true);
+  }, []);
+
+  const refreshDashboard = useCallback(
+    async ({ preserveDraft = false, silent = false } = {}) => {
+      try {
+        const response = await fetchDashboard();
+        hydrateDashboard(response.dashboard, preserveDraft);
+        return response.dashboard;
+      } catch (error) {
+        setApiError(error.message);
+        setDashboardReady(true);
+        if (!silent) {
+          toast.error("后端连接失败", {
+            description: error.message,
+          });
+        }
+        throw error;
+      }
+    },
+    [hydrateDashboard],
+  );
+
+  useEffect(() => {
+    refreshDashboard({ silent: true }).catch(() => {});
+  }, [refreshDashboard]);
+
+  useEffect(() => {
+    if (!dashboardReady) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      refreshDashboard({ preserveDraft: dirtyCount > 0, silent: true }).catch(() => {});
+    }, 12000);
+
+    return () => window.clearInterval(intervalId);
+  }, [dashboardReady, dirtyCount, refreshDashboard]);
+
+  const scheduleSummary = useMemo(
+    () =>
+      dashboard?.scheduleSummary ??
+      `${windowValues["上午窗口-selected"]} / ${windowValues["下午窗口-selected"]}`,
+    [dashboard, windowValues],
+  );
+
+  const metrics = useMemo(() => {
+    const morningWindow = getWindowFromDashboard(dashboard, "morning");
+    const deviceState = dashboard?.device;
+    const workdayState = dashboard?.workday;
+    let deviceLabel = "待处理";
+
+    if (deviceState?.ready) deviceLabel = "已连接";
+    else if (deviceState?.error) deviceLabel = "异常";
+    else if (/unauthorized/i.test(deviceState?.summary ?? "")) deviceLabel = "未授权";
+
+    return [
+      {
+        label: "当前任务状态",
+        value: dashboard?.scheduler?.label ?? "未启动",
+        note: dashboard?.scheduler?.detail ?? "等待后端返回真实调度进程状态。",
+        icon: Activity,
+      },
+      {
+        label: "设备状态",
+        value: deviceLabel,
+        note:
+          deviceState?.serial
+            ? `serial: ${deviceState.serial}`
+            : deviceState?.error || "等待设备连接或授权。",
+        icon: Smartphone,
+      },
+      {
+        label: "下一次上午执行",
+        value: morningWindow?.selected ?? windowValues["上午窗口-selected"],
+        note: morningWindow?.selectedAt || "默认按时间范围抽取，也可以手动精确指定到秒。",
+        icon: AlarmClockCheck,
+      },
+      {
+        label: "最近成功执行",
+        value: dashboard?.lastSuccess?.label ?? "暂无执行记录",
+        note:
+          workdayState?.enabled && workdayState?.checkedDate
+            ? `${workdayState.checkedDate} / ${workdayState.note || "已校验"}`
+            : "工作日状态会在后端返回后显示。",
+        icon: BadgeCheck,
+      },
+    ];
+  }, [dashboard, windowValues]);
+
+  const statusRows = useMemo(() => {
+    const morningWindow = getWindowFromDashboard(dashboard, "morning");
+    const eveningWindow = getWindowFromDashboard(dashboard, "evening");
+    const workdayState = dashboard?.workday;
+
+    return [
+      [
+        "设备状态",
+        dashboard?.device?.error
+          ? `异常 / ${dashboard.device.error}`
+          : `${dashboard?.device?.summary ?? "待处理"}${dashboard?.device?.serial ? ` / ${dashboard.device.serial}` : ""}`,
+        true,
+      ],
+      ["上午下一次执行时间", morningWindow?.selectedAt ?? windowValues["上午窗口-selected"]],
+      ["下午下一次执行时间", eveningWindow?.selectedAt ?? windowValues["下午窗口-selected"]],
+      ["最近一次成功执行时间", dashboard?.lastSuccess?.label ?? "暂无执行记录"],
+      [
+        "最近一次工作日校验结果",
+        !workdayState?.enabled
+          ? "已关闭"
+          : workdayState?.error
+            ? `失败 / ${workdayState.error}`
+            : `${workdayState?.checkedDate ?? "待校验"} / ${workdayState?.note ?? "待返回"}`,
+      ],
+    ];
+  }, [dashboard, windowValues]);
+
+  const statusTags = dashboard?.statusTags ?? ["等待后端状态"];
+  const toggles = dashboard?.toggles ?? [];
+  const logs = dashboard?.logs ?? [];
+  const timeline = dashboard?.timeline ?? [];
+  const alerts = dashboard?.alerts ?? [];
+  const primaryActions = actions.filter((item) => item.group === "primary");
+  const runtimeActions = actions.filter((item) => item.group === "runtime");
+  const supportActions = actions.filter((item) => item.group === "support");
 
   const validation = useMemo(() => {
     const next = {};
@@ -315,9 +597,6 @@ function App() {
       next[key] = message;
     };
 
-    if (!String(configValues["设备序列号 serial"] || "").trim()) {
-      add("设备序列号 serial", "设备序列号不能为空。");
-    }
     if (!String(configValues["应用包名 package"] || "").trim()) {
       add("应用包名 package", "应用包名不能为空。");
     }
@@ -334,8 +613,8 @@ function App() {
     }
 
     const pollInterval = parseNumber(configValues["轮询间隔 poll_interval"]);
-    if (pollInterval === null || pollInterval < 15) {
-      add("轮询间隔 poll_interval", "轮询间隔建议不低于 15 秒。");
+    if (pollInterval === null || pollInterval < 1) {
+      add("轮询间隔 poll_interval", "轮询间隔至少为 1 秒。");
     }
 
     const timeout = parseNumber(configValues["接口超时时间"]);
@@ -387,6 +666,118 @@ function App() {
   );
 
   const hasBlockingIssues = validationIssues.length > 0;
+
+  const focusState = useMemo(() => {
+    if (hasBlockingIssues) {
+      return {
+        tone: "destructive",
+        title: "当前优先项：先修复配置阻断问题",
+        detail: `还有 ${validationIssues.length} 项配置校验未通过，当前不适合直接启动任务或试运行。`,
+        chips: ["保存前先修复阻断项", `草稿变更 ${dirtyCount} 项`, "建议先完成自检"],
+      };
+    }
+
+    if (apiError) {
+      return {
+        tone: "warning",
+        title: "当前优先项：先恢复后端连接",
+        detail: "前端无法读取后端真实状态，当前页面数据可能不是最新结果。",
+        chips: ["启动 backend/api_server.py", "恢复后自动拉取状态", "不要在离线状态下误判结果"],
+      };
+    }
+
+    if (dashboard?.device?.error) {
+      return {
+        tone: "destructive",
+        title: "当前优先项：先处理设备或 adb 异常",
+        detail: dashboard.device.error,
+        chips: ["先恢复设备状态", "再执行一键自检", "确认后再试运行"],
+      };
+    }
+
+    if (dashboard?.scheduler?.running && dashboard?.device?.ready) {
+      return {
+        tone: "success",
+        title: "当前优先项：保持观察，等待下一个窗口",
+        detail: "调度进程和设备状态都处于可执行区间，当前不需要额外操作。",
+        chips: [
+          `下一次计划 ${scheduleSummary}`,
+          dashboard?.device?.serial ? `设备 ${dashboard.device.serial}` : "设备已就绪",
+          dashboard?.workday?.note ? `工作日 ${dashboard.workday.note}` : "等待工作日结果",
+        ],
+      };
+    }
+
+    return {
+      tone: "warning",
+      title: "当前优先项：先自检，再决定是否启动",
+      detail: "如果还没有明确确认设备与接口状态，不建议直接进入正式调度。",
+      chips: [
+        `下一次计划 ${scheduleSummary}`,
+        dashboard?.workday?.enabled
+          ? `工作日校验 ${dashboard?.workday?.note || "待返回"}`
+          : "工作日校验已关闭",
+        dirtyCount > 0 ? `未保存变更 ${dirtyCount} 项` : "当前没有未保存变更",
+      ],
+    };
+  }, [apiError, dashboard, dirtyCount, hasBlockingIssues, scheduleSummary, validationIssues.length]);
+
+  const priorities = useMemo(
+    () => [
+      {
+        title: "建议先处理",
+        value: hasBlockingIssues ? "先修复配置阻断项，再进行任何执行动作" : "先自检，再决定是否试运行或启动任务",
+        note: hasBlockingIssues
+          ? `当前仍有 ${validationIssues.length} 项校验问题。`
+          : dashboard?.device?.ready
+            ? "设备已就绪，直接做一次后端自检最稳妥。"
+            : dashboard?.device?.error || "设备未就绪时不要直接触发自动打卡。",
+        icon: CheckCheck,
+      },
+      {
+        title: "当前风险",
+        value: alerts[0]?.title ?? "暂无阻断风险",
+        note: alerts[0]?.detail ?? "控制台已切换为真实后端数据源。",
+        icon: TriangleAlert,
+      },
+      {
+        title: "最近变更",
+        value: `轮询间隔 ${parseNumber(configValues["轮询间隔 poll_interval"]) ?? "--"} 秒`,
+        note: `状态文件：${String(configValues["状态文件路径 state_file"] || "未设置")}`,
+        icon: BellRing,
+      },
+    ],
+    [alerts, configValues, dashboard, hasBlockingIssues, validationIssues.length],
+  );
+
+  const overviewChecklist = useMemo(() => {
+    if (hasBlockingIssues) {
+      return [
+        "先修复所有参数和时间窗口的阻断项",
+        "确认排期草稿和基础参数草稿都可保存",
+        "保存配置后执行一键自检",
+        "最后再试运行或启动任务",
+      ];
+    }
+
+    if (dashboard?.scheduler?.running && dashboard?.device?.ready) {
+      return [
+        "确认下一次计划时间是否符合当天安排",
+        "保持设备在线并关注最新日志",
+        "只在需要中断调度时再执行停止任务",
+      ];
+    }
+
+    if (dashboard?.device?.error) {
+      return [
+        "先恢复设备连接或 adb 授权",
+        "执行一键自检确认链路恢复",
+        "刷新设备状态后再考虑试运行",
+      ];
+    }
+
+    return quickChecklist;
+  }, [dashboard, hasBlockingIssues]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -882,6 +1273,10 @@ function App() {
     setConfigValues((current) => ({ ...current, [label]: value }));
   };
 
+  const handleToggleChange = (label) => {
+    setToggleValues((current) => ({ ...current, [label]: !current[label] }));
+  };
+
   const handleWindowChange = (title, key, value) => {
     setWindowValues((current) => ({ ...current, [`${title}-${key}`]: value }));
   };
@@ -905,83 +1300,206 @@ function App() {
   };
 
   const isConfigFieldDirty = (label) => configValues[label] !== savedConfigValues[label];
+  const isToggleDirty = (label) => toggleValues[label] !== savedToggleValues[label];
   const isWindowFieldDirty = (title, key) =>
     windowValues[`${title}-${key}`] !== savedWindowValues[`${title}-${key}`];
 
-  const handleAction = (label) => {
+  const handleAction = async (label) => {
     if (!quickActionSet.has(label)) return;
 
-    if ((label === "保存配置" || label === "启动任务") && hasBlockingIssues) {
+    if ((label === "保存配置" || label === "启动任务" || label === "调试模式") && hasBlockingIssues) {
       toast.warning("请先修复阻断问题", {
         description: `当前还有 ${validationIssues.length} 项校验问题，修复后才能继续保存或启动任务。`,
       });
       return;
     }
 
-    setPendingAction(label);
-
-    if (label === "保存配置") {
-      window.setTimeout(() => {
-        const nextWindowValues = windowsData.reduce((current, item) => {
-          const customKey = `${item.title}-custom`;
-          const selectedKey = `${item.title}-selected`;
-          return {
-            ...current,
-            [selectedKey]: current[customKey],
-          };
-        }, windowValues);
-
-        setSavedConfigValues(configValues);
-        setWindowValues(nextWindowValues);
-        setSavedWindowValues(nextWindowValues);
-        toast.success("配置已保存", {
-          description: `下一次打卡时间已更新为 上午 ${nextWindowValues["上午窗口-selected"]}，下午 ${nextWindowValues["下午窗口-selected"]}。`,
-        });
-      }, 320);
-    } else if (label === "重新抽取") {
-      setWindowValues((current) => ({
-        ...current,
-        "上午窗口-selected": "08:47:00",
-        "上午窗口-custom": "08:47:00",
-        "下午窗口-selected": "18:12:00",
-        "下午窗口-custom": "18:12:00",
-      }));
-      toast("今日计划已重新抽取", {
-        description: "上午调整为 08:47:00，下午调整为 18:12:00。请确认窗口范围是否仍然合理。",
+    if (label === "查看排期") {
+      document.getElementById("windows")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      toast.success("已定位到排期设置", {
+        description: "你可以直接修改时间窗口或手动指定下一次打卡时间。",
       });
-    } else {
-      if (label === "查看排期") {
-        document.getElementById("windows")?.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-
-      const messages = {
-        启动任务: ["success", "任务已加入执行队列", "当前为前端模拟反馈，后续可以直接接入 run 命令。"],
-        自检: ["success", "环境自检已完成", "ADB、设备连接和工作日接口状态均已通过本地模拟校验。"],
-        一键自检: ["success", "环境自检已完成", "ADB、设备连接和工作日接口状态均已通过本地模拟校验。"],
-        查看排期: ["success", "已定位到排期设置", "你可以直接修改时间窗口或手动指定下一次打卡时间。"],
-        刷新设备状态: ["success", "设备状态已刷新", "当前设备已连接，授权状态正常，可继续执行任务。"],
-        停止任务: ["warning", "停止任务指令已受理", "当前为前端模拟反馈，后续可接入 stop 命令或进程控制。"],
-        调试模式: ["warning", "调试模式已触发", "当前为前端模拟反馈，后续可接入 debug 命令。"],
-        试运行一次: ["warning", "试运行已触发", "建议先确认下午窗口，再观察本次动作日志是否符合预期。"],
-      };
-      const [type, title, detail] = messages[label] ?? [
-        "default",
-        `${label} 已处理`,
-        "当前为前端交互原型反馈，可在下一步接入真实命令执行。",
-      ];
-      if (type === "success") {
-        toast.success(title, { description: detail });
-      } else if (type === "warning") {
-        toast.warning(title, { description: detail });
-      } else {
-        toast(title, { description: detail });
-      }
+      return;
     }
 
-    window.setTimeout(() => {
+    setPendingAction(label);
+
+    try {
+      let response;
+      let preserveDraft = dirtyCount > 0;
+      let toastMethod = "success";
+
+      if (label === "保存配置") {
+        preserveDraft = false;
+        response = await saveConfig({
+          config: buildConfigPayload(configValues, windowValues, toggleValues, dashboard?.config),
+          nextRuns: buildNextRunsPayload(windowValues),
+        });
+      } else if (label === "重新抽取") {
+        preserveDraft = false;
+        response = await rerollSchedule();
+      } else if (label === "刷新设备状态") {
+        const nextDashboard = await refreshDashboard({ preserveDraft: dirtyCount > 0, silent: true });
+        toast.success("设备状态已刷新", {
+          description: nextDashboard?.device?.error || "已从后端重新读取设备、排期与日志状态。",
+        });
+        return;
+      } else if (label === "启动任务") {
+        response = await startScheduler("run");
+      } else if (label === "停止任务") {
+        toastMethod = "warning";
+        response = await stopScheduler();
+      } else if (label === "调试模式") {
+        toastMethod = "warning";
+        response = await startScheduler("debug");
+      } else if (label === "试运行一次") {
+        toastMethod = "warning";
+        response = await runOnce();
+      } else if (label === "自检" || label === "一键自检") {
+        response = await runDoctor();
+      } else {
+        return;
+      }
+
+      if (response?.dashboard) {
+        hydrateDashboard(response.dashboard, preserveDraft);
+      }
+
+      const title = response?.message || `${label} 已完成`;
+      const detail = response?.detail || response?.output || "后端动作已执行。";
+      if (toastMethod === "warning") {
+        toast.warning(title, { description: detail });
+      } else {
+        toast.success(title, { description: detail });
+      }
+    } catch (error) {
+      toast.error(`${label} 失败`, {
+        description: error.message,
+      });
+    } finally {
       setPendingAction((current) => (current === label ? "" : current));
-    }, 900);
+    }
   };
+
+  const configDirtyCount = Object.keys(configValues).filter(
+    (key) => configValues[key] !== savedConfigValues[key],
+  ).length;
+  const toggleDirtyCount = Object.keys(toggleValues).filter(
+    (key) => toggleValues[key] !== savedToggleValues[key],
+  ).length;
+  const windowDirtyCount = Object.keys(windowValues).filter(
+    (key) => windowValues[key] !== savedWindowValues[key],
+  ).length;
+  const configDraftParts = [
+    configDirtyCount > 0 ? `${configDirtyCount} 个参数` : "",
+    toggleDirtyCount > 0 ? `${toggleDirtyCount} 个开关` : "",
+  ].filter(Boolean);
+
+  const actionStatus = !dashboardReady
+    ? {
+        icon: RefreshCw,
+        title: "正在同步执行环境",
+        detail: "后端状态、设备状态和调度上下文读取中，建议等待同步完成后再触发动作。",
+        loading: true,
+      }
+    : apiError
+      ? {
+          icon: TriangleAlert,
+          tone: "warning",
+          title: "后端离线，动作请求暂不可用",
+          detail: "当前按钮仍可见，但所有需要后端响应的动作都会失败。先恢复 api_server.py。",
+          actionLabel: "刷新状态",
+          onAction: () => handleAction("刷新设备状态"),
+        }
+      : hasBlockingIssues
+        ? {
+            icon: TriangleAlert,
+            tone: "warning",
+            title: `存在 ${validationIssues.length} 项阻断问题`,
+            detail: "保存配置、启动任务和调试模式已禁用。先修复参数或时间窗口校验。",
+          }
+        : pendingAction
+          ? {
+              icon: RefreshCw,
+              tone: "warning",
+              title: `${pendingAction} 执行中`,
+              detail: "等待后端返回结果，执行期间不建议重复触发同类动作。",
+              loading: true,
+            }
+          : {
+              icon: CheckCheck,
+              tone: "success",
+              title: "执行环境已就绪",
+              detail: "推荐顺序：一键自检、刷新设备状态、试运行一次，最后再正式启动任务。",
+            };
+
+  const scheduleStatus = !dashboardReady
+    ? {
+        icon: RefreshCw,
+        title: "正在同步排期",
+        detail: "后端当前时间窗口和下一次执行计划读取中。",
+        loading: true,
+      }
+    : apiError
+      ? {
+          icon: TriangleAlert,
+          tone: "warning",
+          title: "排期区进入离线草稿模式",
+          detail: "你仍然可以修改时间，但当前无法保存到后端；恢复连接后会重新同步真实排期。",
+          actionLabel: "刷新状态",
+          onAction: () => handleAction("刷新设备状态"),
+        }
+      : windowDirtyCount > 0
+        ? {
+            icon: FileClock,
+            tone: hasBlockingIssues ? "warning" : "success",
+            title: "排期草稿待保存",
+            detail: hasBlockingIssues
+              ? `已修改 ${windowDirtyCount} 项窗口设置，但还有 ${validationIssues.length} 项校验问题需要先修复。`
+              : `已修改 ${windowDirtyCount} 项窗口设置，保存后会覆盖后端当前下一次执行时间。`,
+            actionLabel: hasBlockingIssues ? undefined : "保存配置",
+            onAction: hasBlockingIssues ? undefined : () => handleAction("保存配置"),
+          }
+        : {
+            icon: AlarmClockCheck,
+            tone: "success",
+            title: "排期已与后端同步",
+            detail: "当前显示的是后端真实时间窗口和下一次执行计划。",
+          };
+
+  const configStatus = !dashboardReady
+    ? {
+        icon: RefreshCw,
+        title: "正在同步基础参数",
+        detail: "设备、应用和调度参数读取中，稍后会自动回填到表单。",
+        loading: true,
+      }
+    : apiError
+      ? {
+          icon: TriangleAlert,
+          tone: "warning",
+          title: "基础参数处于离线草稿模式",
+          detail: "现在可以继续编辑，但提交时不会成功。恢复后端连接后再保存更稳妥。",
+          actionLabel: "刷新状态",
+          onAction: () => handleAction("刷新设备状态"),
+        }
+      : configDirtyCount + toggleDirtyCount > 0
+        ? {
+            icon: FolderCog,
+            tone: hasBlockingIssues ? "warning" : "success",
+            title: "基础参数草稿待保存",
+            detail: hasBlockingIssues
+              ? `已修改 ${configDraftParts.join("、")}，但仍有 ${validationIssues.length} 项校验问题未通过。`
+              : `已修改 ${configDraftParts.join("、")}，保存后才会同步到后端配置文件。`,
+            actionLabel: hasBlockingIssues ? undefined : "保存配置",
+            onAction: hasBlockingIssues ? undefined : () => handleAction("保存配置"),
+          }
+        : {
+            icon: CheckCheck,
+            tone: "success",
+            title: "基础参数已与后端同步",
+            detail: "当前展示的是后端真实配置，修改后需要显式保存才会生效。",
+          };
 
   return (
     <div
@@ -1061,7 +1579,7 @@ function App() {
           </div>
         </aside>
 
-        <main className="min-w-0 px-3 pb-28 pt-3 sm:px-4 lg:px-4 lg:pt-3 lg:pb-6">
+        <main className="min-w-0 px-3 pb-40 pt-3 sm:px-4 sm:pb-36 lg:px-4 lg:pt-3 lg:pb-6">
           <TopbarRegion
             title={topbarTitle}
             tone={topbarTone}
@@ -1070,7 +1588,7 @@ function App() {
             onToggleTheme={() => setTheme((value) => (value === "light" ? "dark" : "light"))}
           />
 
-          <section className="content-region mt-0 space-y-12 xl:space-y-14">
+          <section className="content-region mt-2.5 space-y-8 sm:mt-3 sm:space-y-10 lg:mt-5 xl:space-y-14">
             <RegionSection
               title="监控总览与执行态势"
               description="用于查看系统状态、关键指标和执行判断。"
@@ -1079,6 +1597,32 @@ function App() {
                 <section id="overview" className="dashboard-block dashboard-block--wide fade-up scroll-mt-28" style={{ "--delay": "60ms" }}>
                   <Card className="region-card h-full overflow-hidden">
                     <CardContent className="region-card-content space-y-5 p-5 pt-5">
+                      {!dashboardReady ? (
+                        <Card className="border-border bg-muted/30">
+                          <CardContent className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+                            <RefreshCw className="size-4 animate-spin" />
+                            <span>正在读取后端状态与调度配置...</span>
+                          </CardContent>
+                        </Card>
+                      ) : null}
+
+                      {apiError ? (
+                        <Card className="border-amber-200 bg-amber-50/80 dark:border-amber-900/40 dark:bg-amber-950/20">
+                          <CardHeader className="pb-4">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant="warning">后端未连接</Badge>
+                              <CardTitle>控制台暂时无法读取真实后端数据</CardTitle>
+                            </div>
+                          </CardHeader>
+                          <CardContent className="space-y-3 text-sm text-foreground">
+                            <p>{apiError}</p>
+                            <p className="text-muted-foreground">
+                              启动命令：`python3 backend/api_server.py`
+                            </p>
+                          </CardContent>
+                        </Card>
+                      ) : null}
+
                       {hasBlockingIssues ? (
                         <Card className="border-red-200 bg-red-50/80 dark:border-red-900/40 dark:bg-red-950/20">
                           <CardHeader className="pb-4">
@@ -1098,6 +1642,8 @@ function App() {
                         </Card>
                       ) : null}
 
+                      <FocusStrip focus={focusState} />
+
                       <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
                         {metrics.map((item, index) => (
                           <MetricCard key={item.label} item={item} delay={`${120 + index * 60}ms`} />
@@ -1111,9 +1657,27 @@ function App() {
                             <CardDescription>只保留当前决策必需的信息。</CardDescription>
                           </CardHeader>
                           <CardContent className="space-y-4">
-                            {priorities.map((item) => (
-                              <DecisionRow key={item.title} item={item} />
-                            ))}
+                            {!dashboardReady ? (
+                              <SectionState
+                                icon={RefreshCw}
+                                title="正在汇总决策信息"
+                                detail="关键指标和风险会在后端状态同步完成后自动生成。"
+                                loading
+                              />
+                            ) : apiError ? (
+                              <SectionState
+                                icon={TriangleAlert}
+                                tone="warning"
+                                title="当前只能查看离线草稿"
+                                detail="后端离线时无法判断真实风险和最新执行上下文，先恢复连接再做决策。"
+                                actionLabel="刷新状态"
+                                onAction={() => handleAction("刷新设备状态")}
+                              />
+                            ) : (
+                              priorities.map((item) => (
+                                <DecisionRow key={item.title} item={item} />
+                              ))
+                            )}
                           </CardContent>
                         </Card>
 
@@ -1123,14 +1687,32 @@ function App() {
                             <CardDescription>按顺序处理更稳妥。</CardDescription>
                           </CardHeader>
                           <CardContent className="space-y-4">
-                            {quickChecklist.map((item, index) => (
-                              <div key={item} className="flex items-start gap-2 rounded-lg border bg-background px-4 py-4 text-sm">
-                                <Badge variant="outline" className="mt-0.5 rounded-md">
-                                  {index + 1}
-                                </Badge>
-                                <p className="leading-6 text-muted-foreground">{item}</p>
-                              </div>
-                            ))}
+                            {!dashboardReady ? (
+                              <SectionState
+                                icon={RefreshCw}
+                                title="正在生成操作路径"
+                                detail="系统会根据设备、排期和当前运行状态生成更合适的处理顺序。"
+                                loading
+                              />
+                            ) : apiError ? (
+                              <SectionState
+                                icon={TriangleAlert}
+                                tone="warning"
+                                title="离线状态下不建议继续操作"
+                                detail="先恢复后端连接，再根据实时状态决定是保存、自检还是启动任务。"
+                                actionLabel="刷新状态"
+                                onAction={() => handleAction("刷新设备状态")}
+                              />
+                            ) : (
+                              overviewChecklist.map((item, index) => (
+                                <div key={item} className="flex items-start gap-2 rounded-lg border bg-background px-4 py-4 text-sm">
+                                  <Badge variant="outline" className="mt-0.5 rounded-md">
+                                    {index + 1}
+                                  </Badge>
+                                  <p className="leading-6 text-muted-foreground">{item}</p>
+                                </div>
+                              ))
+                            )}
                           </CardContent>
                         </Card>
                       </div>
@@ -1179,20 +1761,72 @@ function App() {
                       </div>
                     </CardHeader>
                     <CardContent className="region-card-content space-y-5 pt-5">
-                      <div className="flex flex-wrap gap-2">
-                        {actions.map((item, index) => (
-                          <ActionButton
-                            key={item.label}
-                            variant={item.style}
-                            icon={item.icon}
-                            className="fade-up"
-                            style={{ "--delay": `${220 + index * 40}ms` }}
-                            isPending={pendingAction === item.label}
-                            onClick={() => handleAction(item.label)}
-                          >
-                            {item.label}
-                          </ActionButton>
-                        ))}
+                      <SectionState {...actionStatus} />
+                      <div className="grid gap-4 xl:grid-cols-[1.35fr_1fr]">
+                        <Card className="bg-muted/20">
+                          <CardHeader className="pb-4">
+                            <CardTitle>优先动作</CardTitle>
+                            <CardDescription>先做确认链路，再决定是否正式启动。</CardDescription>
+                          </CardHeader>
+                          <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                            {primaryActions.map((item, index) => (
+                              <ActionTile
+                                key={item.label}
+                                item={item}
+                                className="fade-up"
+                                style={{ "--delay": `${220 + index * 40}ms` }}
+                                isPending={pendingAction === item.label}
+                                onClick={() => handleAction(item.label)}
+                              />
+                            ))}
+                          </CardContent>
+                        </Card>
+
+                        <div className="grid gap-4">
+                          <Card className="bg-muted/20">
+                            <CardHeader className="pb-4">
+                              <CardTitle>运行控制</CardTitle>
+                              <CardDescription>控制后端调度进程的启动、停止和调试。</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-3">
+                              {runtimeActions.map((item) => (
+                                <ActionButton
+                                  key={item.label}
+                                  variant={item.style}
+                                  icon={item.icon}
+                                  size="sm"
+                                  className="w-full justify-start"
+                                  isPending={pendingAction === item.label}
+                                  onClick={() => handleAction(item.label)}
+                                >
+                                  {item.label}
+                                </ActionButton>
+                              ))}
+                            </CardContent>
+                          </Card>
+
+                          <Card className="bg-muted/20">
+                            <CardHeader className="pb-4">
+                              <CardTitle>辅助动作</CardTitle>
+                              <CardDescription>低频但常用的辅助入口。</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-3">
+                              {supportActions.map((item) => (
+                                <ActionButton
+                                  key={item.label}
+                                  variant={item.style}
+                                  icon={item.icon}
+                                  size="sm"
+                                  className="w-full justify-start"
+                                  isPending={pendingAction === item.label}
+                                  onClick={() => handleAction(item.label)}
+                                >
+                                  {item.label}
+                                </ActionButton>
+                              ))}
+                            </CardContent>
+                          </Card>
+                        </div>
                       </div>
                       <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-4 py-4 text-sm text-muted-foreground">
                         <SquareTerminal className="size-4 shrink-0" />
@@ -1209,56 +1843,71 @@ function App() {
                         <CardTitle>排期设置</CardTitle>
                         <CardDescription>看时间、改时间、重抽时间。</CardDescription>
                       </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <ActionButton
+                          variant="default"
+                          icon={RefreshCw}
+                          size="sm"
+                          isPending={pendingAction === "重新抽取"}
+                          onClick={() => handleAction("重新抽取")}
+                        >
+                          重新抽取
+                        </ActionButton>
+                        <Button variant="outline" size="sm" onClick={handleRestoreDefaults}>
+                          恢复默认
+                        </Button>
+                      </div>
                     </CardHeader>
                     <CardContent className="region-card-content space-y-5 pt-5">
-                      <div className="grid gap-3 sm:grid-cols-2">
+                      <SectionState {...scheduleStatus} />
+                      <div className="grid items-stretch gap-4 lg:grid-cols-2">
                         <MiniPanel title="今日下一次计划" value={scheduleSummary} detail="默认按时间窗口抽取，也支持手动精确指定到秒。" />
-                        <MiniPanel title="最近完成日期" value="2026-04-09" detail="两个窗口都已正常落库。" />
-                        <div className="rounded-xl border bg-muted/30 p-4">
-                          <div className="flex h-full flex-col justify-center gap-2">
-                            <ActionButton
-                              variant="default"
-                              icon={RefreshCw}
-                              isPending={pendingAction === "重新抽取"}
-                              onClick={() => handleAction("重新抽取")}
-                            >
-                              重新抽取
-                            </ActionButton>
-                            <Button variant="ghost" onClick={handleRestoreDefaults}>
-                              恢复默认
-                            </Button>
-                          </div>
-                        </div>
+                        <MiniPanel
+                          title="最近完成记录"
+                          value={dashboard?.lastSuccess?.label ?? "暂无执行记录"}
+                          detail={dashboard?.workday?.checkedDate ? `最近工作日校验：${dashboard.workday.checkedDate}` : "等待后端返回执行结果。"}
+                        />
                       </div>
 
-                      <div className="grid gap-5">
+                      <div className="grid gap-5 lg:grid-cols-2">
                         {windowsData.map((item, index) => (
                           <Card
                             key={item.title}
-                            className="fade-up card-hover bg-muted/20"
+                            className={cn(
+                              "fade-up card-hover flex h-full flex-col",
+                              item.accentClass,
+                            )}
                             style={{ "--delay": `${260 + index * 60}ms` }}
                           >
-                            <CardHeader>
+                            <CardHeader className="min-h-[92px]">
                               <div className="flex items-start justify-between gap-2">
-                                <div className="flex flex-col gap-2">
+                                <div className="flex flex-col gap-3">
+                                  <div className="flex items-center gap-2">
+                                    <Badge variant="outline" className={cn("rounded-md", item.badgeClass)}>
+                                      <item.icon className="size-3.5" />
+                                      {item.eyebrow}
+                                    </Badge>
+                                  </div>
                                   <CardTitle>{item.title}</CardTitle>
                                   <CardDescription>{item.note}</CardDescription>
                                 </div>
                               </div>
                             </CardHeader>
-                            <CardContent className="space-y-4">
-                              <div className="grid gap-2 sm:grid-cols-2">
-                                <Field
+                            <CardContent className="flex flex-1 flex-col gap-5">
+                              <div className="grid gap-4 sm:grid-cols-2">
+                                <TimePickerField
                                   label="开始时间"
+                                  precision="minute"
                                   value={windowValues[`${item.title}-start`]}
-                                  onChange={(event) => handleWindowChange(item.title, "start", event.target.value)}
+                                  onChange={(nextValue) => handleWindowChange(item.title, "start", nextValue)}
                                   dirty={isWindowFieldDirty(item.title, "start")}
                                   error={validation[`${item.title}-start`]}
                                 />
-                                <Field
+                                <TimePickerField
                                   label="结束时间"
+                                  precision="minute"
                                   value={windowValues[`${item.title}-end`]}
-                                  onChange={(event) => handleWindowChange(item.title, "end", event.target.value)}
+                                  onChange={(nextValue) => handleWindowChange(item.title, "end", nextValue)}
                                   dirty={isWindowFieldDirty(item.title, "end")}
                                   error={validation[`${item.title}-end`]}
                                 />
@@ -1267,27 +1916,30 @@ function App() {
                               <div className="rounded-xl border bg-background p-4">
                                 <div className="flex items-start justify-between gap-2">
                                   <div className="flex flex-col gap-2">
-                                    <p className="text-sm font-medium text-foreground">手动指定下一次执行</p>
+                                    <p className="text-sm font-medium text-foreground">选择下一次执行</p>
                                     <p className="text-xs leading-6 text-muted-foreground">
-                                      使用 Time Picker 精确到秒。保存配置后会覆盖当前下一次执行时间。
+                                      使用 shadcn 风格 Time Picker 精确到秒。保存配置后会覆盖当前下一次执行时间。
                                     </p>
                                   </div>
                                 </div>
-                                <div className="mt-4 flex flex-col gap-2">
+                                <div className="mt-4 flex flex-col gap-4">
                                   <TimePickerField
                                     label="指定下一次打卡时间"
+                                    precision="second"
                                     value={windowValues[`${item.title}-custom`]}
-                                    onChange={(event) => handleWindowChange(item.title, "custom", event.target.value)}
+                                    onChange={(nextValue) => handleWindowChange(item.title, "custom", nextValue)}
                                     dirty={isWindowFieldDirty(item.title, "custom")}
                                     error={validation[`${item.title}-custom`]}
                                   />
-                                  <div className="grid gap-2 sm:grid-cols-2">
+                                  <div className="grid gap-3 sm:grid-cols-2">
                                     <SummaryRow label="保存后生效时间" value={windowValues[`${item.title}-custom`]} emphasized />
                                     <SummaryRow label="当前下一次执行" value={windowValues[`${item.title}-selected`]} />
                                   </div>
                                 </div>
                               </div>
-                              <SummaryRow label="最近完成日期" value={windowValues[`${item.title}-completed`]} />
+                              <div className="mt-auto">
+                                <SummaryRow label="最近完成日期" value={windowValues[`${item.title}-completed`]} />
+                              </div>
                             </CardContent>
                           </Card>
                         ))}
@@ -1305,27 +1957,57 @@ function App() {
                       </div>
                     </CardHeader>
                     <CardContent className="region-card-content space-y-5 pt-5">
-                      <div className="grid gap-4 2xl:grid-cols-2">
+                      <SectionState {...configStatus} />
+                      <div className="grid items-stretch gap-4 lg:grid-cols-2">
                         {configGroups.map((group) => (
-                          <Card key={group.title} className="bg-muted/20">
-                            <CardHeader>
-                              <CardTitle>{group.title}</CardTitle>
-                              <CardDescription>{group.description}</CardDescription>
+                          <Card key={group.title} className="flex h-full flex-col bg-muted/20">
+                            <CardHeader className="min-h-[96px]">
+                              <div className="space-y-3">
+                                <div className="flex items-center gap-2">
+                                  <Badge variant="outline" className={cn("rounded-md", group.badgeClass)}>
+                                    <group.icon className="size-3.5" />
+                                    {group.eyebrow}
+                                  </Badge>
+                                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                                    {group.summary}
+                                  </p>
+                                </div>
+                                <div className="space-y-1.5">
+                                  <CardTitle>{group.title}</CardTitle>
+                                  <CardDescription>{group.description}</CardDescription>
+                                </div>
+                              </div>
                             </CardHeader>
-                            <CardContent className="space-y-4">
-                              {group.fields.map((field) => (
-                                <Field
-                                  key={field.label}
-                                  label={field.label}
-                                  value={configValues[field.label]}
-                                  onChange={(event) => handleConfigChange(field.label, event.target.value)}
-                                  dirty={isConfigFieldDirty(field.label)}
-                                  error={validation[field.label]}
-                                  helper={field.helper}
-                                />
-                              ))}
+                            <CardContent className="flex flex-1 flex-col">
+                              <div className="grid gap-4 md:grid-cols-2">
+                                {group.fields.map((field) => (
+                                  <Field
+                                    key={field.label}
+                                    label={field.label}
+                                    value={configValues[field.label]}
+                                    onChange={(event) => handleConfigChange(field.label, event.target.value)}
+                                    dirty={isConfigFieldDirty(field.label)}
+                                    error={validation[field.label]}
+                                    helper={field.helper}
+                                  />
+                                ))}
+                              </div>
                             </CardContent>
                           </Card>
+                        ))}
+                      </div>
+
+                      <div className="grid gap-4 xl:grid-cols-3">
+                        {toggleDefinitions.map((item) => (
+                          <ToggleCard
+                            key={item.label}
+                            label={item.label}
+                            enabled={toggleValues[item.label]}
+                            dirty={isToggleDirty(item.label)}
+                            enabledNote={item.enabledNote}
+                            disabledNote={item.disabledNote}
+                            onToggle={() => handleToggleChange(item.label)}
+                          />
                         ))}
                       </div>
 
@@ -1356,21 +2038,39 @@ function App() {
                       </div>
                     </CardHeader>
                     <CardContent className="region-card-content space-y-5 pt-5">
-                      <AlertRow
-                        icon={TriangleAlert}
-                        title="工作日接口依赖在线"
-                        detail="如果接口连续超时，建议临时关闭工作日校验，并在保存后执行自检。"
-                      />
-                      <AlertRow
-                        icon={BellRing}
-                        title="关键配置修改需二次确认"
-                        detail="serial、package、state_file 变更会影响执行链路，建议在保存前复核。"
-                      />
-                      <AlertRow
-                        icon={ListChecks}
-                        title="建议先做自检再试运行"
-                        detail="先检查设备状态和权限，再触发单次动作，能减少误报。"
-                      />
+                      {!dashboardReady ? (
+                        <SectionState
+                          icon={RefreshCw}
+                          title="正在同步提醒"
+                          detail="后端告警和风险状态读取中，稍后会自动更新。"
+                          loading
+                        />
+                      ) : apiError ? (
+                        <SectionState
+                          icon={TriangleAlert}
+                          tone="warning"
+                          title="提醒区暂时离线"
+                          detail="后端未连接时无法展示实时提醒，恢复连接后会自动回填。"
+                          actionLabel="刷新状态"
+                          onAction={() => handleAction("刷新设备状态")}
+                        />
+                      ) : alerts.length === 0 ? (
+                        <SectionState
+                          icon={BadgeCheck}
+                          tone="success"
+                          title="当前没有新的提醒"
+                          detail="后端没有返回新的风险项，继续关注设备状态和排期即可。"
+                        />
+                      ) : (
+                        alerts.map((alert, index) => (
+                          <AlertRow
+                            key={`${alert.title}-${index}`}
+                            icon={index === 0 ? TriangleAlert : index === 1 ? BellRing : ListChecks}
+                            title={alert.title}
+                            detail={alert.detail}
+                          />
+                        ))
+                      )}
                     </CardContent>
                   </Card>
                 </section>
@@ -1381,23 +2081,34 @@ function App() {
                       <CardTitle>日志</CardTitle>
                       <CardDescription>只看最近动作和结果。</CardDescription>
                     </CardHeader>
-                    <CardContent className="region-card-content space-y-5">
-                      {logs.map((log) => (
-                        <Card key={`${log.time}-${log.title}`} className="card-hover bg-muted/20">
-                          <CardContent className="grid gap-2 p-4 sm:grid-cols-[auto_1fr_auto] sm:items-center">
-                            <Badge variant="outline" className="rounded-md">
-                              {log.time}
-                            </Badge>
-                            <div className="space-y-2">
-                              <p className="text-sm font-medium">{log.title}</p>
-                              <p className="text-sm leading-6 text-muted-foreground">{log.detail}</p>
-                            </div>
-                            <Badge variant={statusTone(log.status)} className="rounded-md">
-                              {log.status}
-                            </Badge>
-                          </CardContent>
-                        </Card>
-                      ))}
+                    <CardContent className="region-card-content space-y-3">
+                      {!dashboardReady ? (
+                        <SectionState
+                          icon={RefreshCw}
+                          title="正在同步日志"
+                          detail="最近动作和执行结果还在读取中。"
+                          loading
+                        />
+                      ) : apiError ? (
+                        <SectionState
+                          icon={TriangleAlert}
+                          tone="warning"
+                          title="日志区暂时离线"
+                          detail="后端未连接时无法回看最新执行日志。"
+                          actionLabel="刷新状态"
+                          onAction={() => handleAction("刷新设备状态")}
+                        />
+                      ) : logs.length === 0 ? (
+                        <SectionState
+                          icon={FileClock}
+                          title="当前还没有执行日志"
+                          detail="后端尚未返回新的动作记录，执行一次自检或试运行后会出现在这里。"
+                        />
+                      ) : (
+                        logs.map((log) => (
+                          <LogRow key={`${log.time}-${log.title}`} log={log} />
+                        ))
+                      )}
                     </CardContent>
                   </Card>
                 </section>
@@ -1408,20 +2119,39 @@ function App() {
                       <CardTitle>时间线</CardTitle>
                       <CardDescription>快速回看今天发生了什么。</CardDescription>
                     </CardHeader>
-                    <CardContent className="region-card-content space-y-5">
-                      {timeline.map((item, index) => (
-                        <div key={item}>
-                          <div className="flex items-start gap-2 text-sm">
-                            <Badge variant="outline" className="rounded-md">
-                              {index + 1}
-                            </Badge>
-                            <p className={cn("leading-6 text-muted-foreground", index === 1 && "font-medium text-foreground")}>
-                              {item}
-                            </p>
-                          </div>
-                          {index < timeline.length - 1 ? <Separator className="mt-4" /> : null}
-                        </div>
-                      ))}
+                    <CardContent className="region-card-content space-y-0">
+                      {!dashboardReady ? (
+                        <SectionState
+                          icon={RefreshCw}
+                          title="正在生成时间线"
+                          detail="今天的执行轨迹会在后端状态同步完成后展示。"
+                          loading
+                        />
+                      ) : apiError ? (
+                        <SectionState
+                          icon={TriangleAlert}
+                          tone="warning"
+                          title="时间线暂时不可用"
+                          detail="恢复后端连接后，页面会重新拉取当天的执行轨迹。"
+                          actionLabel="刷新状态"
+                          onAction={() => handleAction("刷新设备状态")}
+                        />
+                      ) : timeline.length === 0 ? (
+                        <SectionState
+                          icon={AlarmClockCheck}
+                          title="今天还没有新的时间线记录"
+                          detail="执行动作产生后，这里会按顺序展示当天发生的关键节点。"
+                        />
+                      ) : (
+                        timeline.map((item, index) => (
+                          <TimelineRow
+                            key={item}
+                            item={item}
+                            index={index}
+                            isLast={index === timeline.length - 1}
+                          />
+                        ))
+                      )}
                     </CardContent>
                   </Card>
                 </section>
@@ -1432,12 +2162,9 @@ function App() {
                       <CardTitle>保护规则</CardTitle>
                       <CardDescription>保存前再看这一组。</CardDescription>
                     </CardHeader>
-                    <CardContent className="region-card-content space-y-5">
-                      {guards.map(([label, value, emphasized], index) => (
-                        <div key={label} className="space-y-4">
-                          <SummaryRow label={label} value={value} emphasized={emphasized} />
-                          {index < guards.length - 1 ? <Separator /> : null}
-                        </div>
+                    <CardContent className="region-card-content space-y-3">
+                      {guards.map(([label, value, emphasized]) => (
+                        <GuardRow key={label} label={label} value={value} emphasized={emphasized} />
                       ))}
                     </CardContent>
                   </Card>
@@ -1451,6 +2178,7 @@ function App() {
           activeSection={activeSection}
           pendingAction={pendingAction}
           hasBlockingIssues={hasBlockingIssues}
+          blockingCount={validationIssues.length}
           onAction={handleAction}
         />
       </div>
@@ -1464,6 +2192,66 @@ function ActionButton({ icon: Icon, children, isPending = false, className, size
       <Icon />
       <span>{isPending ? "处理中" : children}</span>
     </Button>
+  );
+}
+
+function ActionTile({ item, isPending = false, className, ...props }) {
+  return (
+    <div className={cn("rounded-xl border bg-background p-3", className)}>
+      <div className="flex h-full flex-col gap-3">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="flex size-8 items-center justify-center rounded-md border bg-muted/30">
+              <item.icon className="size-4" />
+            </div>
+            <p className="text-sm font-medium">{item.label}</p>
+          </div>
+          <p className="text-sm leading-6 text-muted-foreground">{item.note}</p>
+        </div>
+        <ActionButton
+          variant={item.style}
+          icon={item.icon}
+          size="sm"
+          className="mt-auto w-full justify-center"
+          isPending={isPending}
+          {...props}
+        >
+          {item.label}
+        </ActionButton>
+      </div>
+    </div>
+  );
+}
+
+function FocusStrip({ focus }) {
+  const tone = toneClasses(focus.tone);
+  return (
+    <Card className={cn("overflow-hidden", tone.panel)}>
+      <CardContent className="space-y-4 p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Badge variant={focus.tone} className="rounded-md">
+                {toneLabel(focus.tone)}
+              </Badge>
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                Current Focus
+              </p>
+            </div>
+            <h3 className="text-lg font-semibold tracking-tight">{focus.title}</h3>
+            <p className="max-w-3xl text-sm leading-6 text-muted-foreground">{focus.detail}</p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {focus.chips.map((chip) => (
+            <div key={chip} className={cn("rounded-md px-3 py-1.5 text-sm", tone.soft)}>
+              {chip}
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1766,11 +2554,19 @@ function TopbarRegion({ title, tone, theme, sidebarCollapsed, onToggleTheme }) {
   );
 }
 
-function BottomStickyMenu({ activeSection, pendingAction, hasBlockingIssues, onAction }) {
+function BottomStickyMenu({ activeSection, pendingAction, hasBlockingIssues, blockingCount, onAction }) {
   const [visible, setVisible] = useState(true);
   const lastScrollYRef = useRef(0);
   const travelRef = useRef(0);
   const alwaysVisible = activeSection === "actions";
+  const summaryTone = hasBlockingIssues ? "warning" : pendingAction ? "warning" : "success";
+  const summaryToneSet = toneClasses(summaryTone);
+  const summaryBadge = hasBlockingIssues ? `阻断项 ${blockingCount}` : pendingAction ? "处理中" : "快捷入口";
+  const summaryText = hasBlockingIssues
+    ? "先修复配置问题，再保存或启动任务。"
+    : pendingAction
+      ? "后端动作执行中，等待返回结果。"
+      : "移动端可直接从这里完成保存、自检和启动。";
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -1822,10 +2618,16 @@ function BottomStickyMenu({ activeSection, pendingAction, hasBlockingIssues, onA
 
   return (
     <div className={cn("menu-outer", !visible && !alwaysVisible && "menu-outer--hidden")}>
+      <div className={cn("flex w-full items-center justify-between gap-3 rounded-2xl border px-3 py-2", summaryToneSet.panel)}>
+        <Badge variant={summaryTone} className="rounded-md">
+          {summaryBadge}
+        </Badge>
+        <p className="text-right text-xs leading-5 text-muted-foreground">{summaryText}</p>
+      </div>
       <div className="menu-inner">
         <button
           type="button"
-          className={cn("menu-link", pendingAction === "保存配置" && "menu-link--active")}
+          className={cn("menu-link menu-link--wide", pendingAction === "保存配置" && "menu-link--active")}
           disabled={hasBlockingIssues}
           onClick={() => onAction("保存配置")}
         >
@@ -1851,6 +2653,38 @@ function BottomStickyMenu({ activeSection, pendingAction, hasBlockingIssues, onA
   );
 }
 
+function SectionState({
+  icon: Icon,
+  title,
+  detail,
+  tone = "secondary",
+  actionLabel,
+  actionIcon: ActionIcon = RefreshCw,
+  loading = false,
+  onAction,
+}) {
+  const toneSet = toneClasses(tone);
+  return (
+    <div className={cn("rounded-xl border p-4", toneSet.panel)}>
+      <div className="flex items-start gap-3">
+        <div className={cn("flex size-9 shrink-0 items-center justify-center rounded-full border", toneSet.icon)}>
+          <Icon className={cn("size-4", loading && "animate-spin")} />
+        </div>
+        <div className="min-w-0 flex-1 space-y-2">
+          <p className="text-sm font-medium">{title}</p>
+          <p className="text-sm leading-6 text-muted-foreground">{detail}</p>
+          {actionLabel ? (
+            <Button variant="outline" size="sm" className="gap-2" onClick={onAction}>
+              <ActionIcon className="size-4" />
+              <span>{actionLabel}</span>
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SummaryRow({ label, value, emphasized = false }) {
   return (
     <div className="flex items-start justify-between gap-4 rounded-lg border bg-muted/20 px-4 py-2">
@@ -1864,10 +2698,11 @@ function SummaryRow({ label, value, emphasized = false }) {
 
 function MetricCard({ item, delay }) {
   const tone = statusTone(item.value);
+  const toneSet = toneClasses(tone);
   return (
-    <Card className="fade-up card-hover bg-muted/20" style={{ "--delay": delay }}>
+    <Card className={cn("fade-up card-hover", toneSet.panel)} style={{ "--delay": delay }}>
       <CardContent className="space-y-4 p-4">
-        <div className="flex size-9 items-center justify-center rounded-md border bg-background">
+        <div className={cn("flex size-9 items-center justify-center rounded-md border", toneSet.icon)}>
           <item.icon className="size-3.5" />
         </div>
         <div className="space-y-2">
@@ -1875,7 +2710,7 @@ function MetricCard({ item, delay }) {
           <div className="flex items-center gap-2">
             <h3 className="text-lg font-semibold tracking-tight">{item.value}</h3>
             <Badge variant={tone} className="rounded-md px-2 py-0 text-xs">
-              {tone === "success" ? "正常" : tone === "warning" ? "关注" : "信息"}
+              {toneLabel(tone)}
             </Badge>
           </div>
           <p className="text-sm leading-6 text-muted-foreground">{item.note}</p>
@@ -1902,7 +2737,7 @@ function DecisionRow({ item }) {
 
 function Field({ label, dirty, error, helper, ...props }) {
   return (
-    <label className="space-y-2">
+    <label className="space-y-2.5">
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-medium">{label}</span>
         {dirty ? (
@@ -1913,6 +2748,7 @@ function Field({ label, dirty, error, helper, ...props }) {
       </div>
       <Input
         className={cn(
+          "h-10 rounded-lg bg-background/80",
           dirty && "border-zinc-400 dark:border-zinc-500",
           error && "border-red-400 focus-visible:ring-red-300 dark:border-red-500 dark:focus-visible:ring-red-900",
         )}
@@ -1925,9 +2761,18 @@ function Field({ label, dirty, error, helper, ...props }) {
   );
 }
 
-function TimePickerField({ label, dirty, error, helper, className, ...props }) {
+function TimePickerField({
+  label,
+  dirty,
+  error,
+  helper,
+  className,
+  precision = "minute",
+  value,
+  onChange,
+}) {
   return (
-    <label className="flex flex-col gap-2">
+    <label className="flex flex-col gap-2.5">
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-medium">{label}</span>
         {dirty ? (
@@ -1936,41 +2781,126 @@ function TimePickerField({ label, dirty, error, helper, className, ...props }) {
           </Badge>
         ) : null}
       </div>
-      <div className="relative">
-        <Clock3 className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          type="time"
-          step="1"
-          className={cn(
-            "h-10 rounded-lg bg-muted/30 pl-9 pr-3 font-medium tabular-nums [color-scheme:light_dark] [&::-webkit-calendar-picker-indicator]:hidden [&::-webkit-calendar-picker-indicator]:appearance-none",
-            dirty && "border-zinc-400 dark:border-zinc-500",
-            error && "border-red-400 focus-visible:ring-red-300 dark:border-red-500 dark:focus-visible:ring-red-900",
-            className,
-          )}
-          aria-invalid={Boolean(error)}
-          {...props}
-        />
-      </div>
+      <TimePicker
+        value={value}
+        onChange={onChange}
+        precision={precision}
+        invalid={Boolean(error)}
+        className={cn(dirty && "rounded-lg ring-1 ring-zinc-300 dark:ring-zinc-600", className)}
+      />
       {error ? <p className="text-xs text-red-600 dark:text-red-400">{error}</p> : null}
       {helper ? <p className="text-xs leading-6 text-muted-foreground">{helper}</p> : null}
     </label>
   );
 }
 
+function ToggleCard({ label, enabled, dirty, enabledNote, disabledNote, onToggle }) {
+  return (
+    <Card className="bg-muted/20">
+      <CardContent className="space-y-4 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="size-4" />
+              <p className="text-sm font-medium">{label}</p>
+            </div>
+            <p className="text-sm leading-6 text-muted-foreground">
+              {enabled ? enabledNote : disabledNote}
+            </p>
+          </div>
+          {dirty ? (
+            <Badge variant="outline" className="rounded-md text-xs">
+              已修改
+            </Badge>
+          ) : null}
+        </div>
+
+        <div className="flex items-center justify-between gap-3 rounded-lg border bg-background px-3 py-3">
+          <Badge variant={enabled ? "success" : "secondary"} className="rounded-md">
+            {enabled ? "已开启" : "已关闭"}
+          </Badge>
+          <Button variant={enabled ? "default" : "outline"} size="sm" onClick={onToggle}>
+            {enabled ? "关闭" : "开启"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function LogRow({ log }) {
+  const tone = statusTone(log.status);
+  const toneSet = toneClasses(tone);
+  return (
+    <div className={cn("rounded-xl border p-4", toneSet.panel)}>
+      <div className="grid gap-3 sm:grid-cols-[88px_minmax(0,1fr)_auto] sm:items-start">
+        <Badge variant="outline" className={cn("h-fit w-fit rounded-md", toneSet.soft)}>
+          {log.time}
+        </Badge>
+        <div className="space-y-1.5">
+          <p className="text-sm font-medium">{log.title}</p>
+          <p className="text-sm leading-6 text-muted-foreground">{log.detail}</p>
+        </div>
+        <Badge variant={statusTone(log.status)} className="h-fit rounded-md">
+          {log.status}
+        </Badge>
+      </div>
+    </div>
+  );
+}
+
+function TimelineRow({ item, index, isLast }) {
+  return (
+    <div className="relative pl-8">
+      <div className="absolute left-0 top-0 flex size-5 items-center justify-center rounded-full border bg-background text-xs font-medium text-muted-foreground">
+        {index + 1}
+      </div>
+      {!isLast ? <div className="absolute left-[9px] top-6 h-[calc(100%-12px)] w-px bg-border" /> : null}
+      <div className="pb-5">
+        <p className={cn("text-sm leading-6 text-muted-foreground", index === 1 && "font-medium text-foreground")}>
+          {item}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function GuardRow({ label, value, emphasized = false }) {
+  const tone = emphasized ? "warning" : statusTone(value);
+  const toneSet = toneClasses(tone);
+  return (
+    <div className={cn("rounded-xl border p-4", toneSet.panel)}>
+      <div className="flex items-start gap-3">
+        <div className={cn("flex size-8 shrink-0 items-center justify-center rounded-md border", toneSet.icon)}>
+          <ShieldCheck className="size-4" />
+        </div>
+        <div className="space-y-1.5">
+          <p className={cn("text-sm", emphasized ? "font-medium text-foreground" : "font-medium")}>{label}</p>
+          <p className="text-sm leading-6 text-muted-foreground">{value}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MiniPanel({ title, value, detail }) {
   return (
-    <div className="rounded-xl border bg-muted/30 p-4">
-      <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{title}</p>
-      <h3 className="mt-2 text-lg font-semibold tracking-tight">{value}</h3>
-      <p className="mt-2 text-sm leading-6 text-muted-foreground">{detail}</p>
+    <div className="flex h-full flex-col justify-between rounded-xl border bg-muted/20 p-4">
+      <div className="space-y-2">
+        <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{title}</p>
+        <h3 className="text-lg font-semibold tracking-tight">{value}</h3>
+      </div>
+      <p className="mt-4 text-sm leading-6 text-muted-foreground">{detail}</p>
     </div>
   );
 }
 
 function AlertRow({ icon: Icon, title, detail }) {
+  const tone = statusTone(`${title} ${detail}`);
+  const toneSet = toneClasses(tone);
   return (
-    <div className="flex items-start gap-2 rounded-xl border bg-muted/20 p-4">
-      <div className="flex size-9 shrink-0 items-center justify-center rounded-full border bg-background">
+    <div className={cn("flex items-start gap-2 rounded-xl border p-4", toneSet.panel)}>
+      <div className={cn("flex size-9 shrink-0 items-center justify-center rounded-full border", toneSet.icon)}>
         <Icon className="size-4" />
       </div>
       <div className="space-y-2">
