@@ -164,7 +164,7 @@ const actions = [
     note: "重新读取当前设备连接、授权和日志状态。",
   },
   {
-    label: "试运行一次",
+    label: "试运行",
     style: "secondary",
     icon: Bot,
     group: "primary",
@@ -442,7 +442,7 @@ function App() {
         "刷新设备状态",
         "停止任务",
         "调试模式",
-        "试运行一次",
+        "试运行",
         "重新抽取",
       ]),
     [],
@@ -1423,7 +1423,7 @@ function App() {
       } else if (label === "调试模式") {
         toastMethod = "warning";
         response = await startScheduler("debug");
-      } else if (label === "试运行一次") {
+      } else if (label === "试运行") {
         toastMethod = "warning";
         response = await runOnce();
       } else if (label === "自检" || label === "一键自检") {
@@ -1501,7 +1501,7 @@ function App() {
               icon: CheckCheck,
               tone: "success",
               title: "执行环境已就绪",
-              detail: "推荐顺序：一键自检、刷新设备状态、试运行一次，最后再正式启动任务。",
+              detail: "推荐顺序：一键自检、刷新设备状态、试运行，最后再正式启动任务。",
             };
 
   const scheduleStatus = !dashboardReady
@@ -2878,18 +2878,18 @@ function BottomStickyMenu({ activeSection, pendingAction, hasBlockingIssues, blo
         </button>
         <button
           type="button"
+          className={cn("menu-link", pendingAction === "试运行" && "menu-link--active")}
+          onClick={() => onAction("试运行")}
+        >
+          <div>{pendingAction === "试运行" ? "处理中..." : "试运行"}</div>
+        </button>
+        <button
+          type="button"
           className={cn("menu-link", pendingAction === "启动任务" && "menu-link--active")}
           disabled={hasBlockingIssues}
           onClick={() => onAction("启动任务")}
         >
           <div>{pendingAction === "启动任务" ? "处理中..." : "启动任务"}</div>
-        </button>
-        <button
-          type="button"
-          className={cn("menu-link", pendingAction === "自检" && "menu-link--active")}
-          onClick={() => onAction("自检")}
-        >
-          <div>{pendingAction === "自检" ? "处理中..." : "自检"}</div>
         </button>
       </div>
     </div>
