@@ -33,7 +33,7 @@ import { gsap } from "gsap";
 import { SplitText as GSAPSplitText } from "gsap/SplitText";
 import { toast } from "sonner";
 
-import { 高级高标 } from "./components/AdvancedCursor";
+import { AdvancedCursor } from "./components/AdvancedCursor";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
@@ -1365,7 +1365,7 @@ function App() {
           "calc(var(--sidebar-inner-size) + (var(--sidebar-rail-padding) * 2) + var(--sidebar-border-width))",
       }}
     >
-      <高级高标 />
+      <AdvancedCursor />
       <div className="surface-grid pointer-events-none fixed inset-0 opacity-60 dark:opacity-40" />
 
       <div

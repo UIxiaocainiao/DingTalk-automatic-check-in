@@ -2,7 +2,7 @@ import { useEffect } from "react";
 
 import "./advanced-cursor.css";
 
-export function 高级高标() {
+export function AdvancedCursor() {
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
     if (window.matchMedia("(hover: none) and (pointer: coarse)").matches) return undefined;
@@ -82,4 +82,4 @@ export function 高级高标() {
   return null;
 }
 
-export default 高级高标;
+export default AdvancedCursor;
