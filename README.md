@@ -143,6 +143,67 @@ npm install
 npm run dev
 ```
 
+## 公网部署（阿里云域名 + 七牛前端 + Railway 后端）
+
+目标建议：
+
+- `www.example.com` -> 七牛静态站（前端）
+- `api.example.com` -> Railway（后端 API）
+
+### 1) Railway 部署后端
+
+在 Railway 新建服务并连接仓库后，设置：
+
+- Root Directory: `backend`
+- Start Command: `python3 api_server.py --host 0.0.0.0 --port ${PORT:-8000}`
+- Health Check: `/api/health`
+
+部署完成后先确认 `https://<railway-domain>/api/health` 可访问，再绑定 `api.example.com`。
+
+### 2) 前端改用公网 API 并打包
+
+生产构建前，在 `frontend/` 下创建 `.env.production`（可参考 `.env.production.example`）：
+
+```bash
+VITE_API_BASE_URL=https://api.example.com
+```
+
+然后打包：
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+构建产物目录：`frontend/dist`。
+
+### 3) 七牛上传前端静态资源
+
+- 创建公开读空间
+- 上传 `frontend/dist` 里的所有文件
+- 配置静态首页 `index.html`（可选配置 404）
+- 绑定 `www.example.com` 并开启 HTTPS
+
+### 4) 阿里云 DNS 解析
+
+在阿里云云解析中添加：
+
+- `www` CNAME -> 七牛提供的目标域名
+- `api` CNAME -> Railway 提供的目标域名
+
+生效后即可通过公网访问前后端。
+
+### 5) 一键验收（可选）
+
+可使用脚本快速检查前后端公网可用性：
+
+```bash
+bash scripts/verify_public_deploy.sh www.example.com api.example.com
+```
+
+可配合 `DEPLOY_PUBLIC_TEMPLATE.md` 记录你的实际部署参数。
+
 ## macOS 后台自启动（可选）
 
 ```bash

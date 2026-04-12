@@ -1,3 +1,10 @@
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
+
+function withBase(path) {
+  if (!API_BASE_URL) return path;
+  return `${API_BASE_URL}${path}`;
+}
+
 async function readErrorMessage(response) {
   try {
     const payload = await response.json();
@@ -7,7 +14,7 @@ async function readErrorMessage(response) {
 }
 
 async function request(path, options = {}) {
-  const response = await fetch(path, {
+  const response = await fetch(withBase(path), {
     headers: {
       "Content-Type": "application/json",
       ...(options.headers ?? {}),

@@ -957,8 +957,17 @@ class ApiHandler(BaseHTTPRequestHandler):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="HTTP API for the DingTalk scheduler console.")
-    parser.add_argument("--host", default="127.0.0.1", help="Host to bind. Default: 127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind. Default: 8000")
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("HOST", "127.0.0.1"),
+        help="Host to bind. Default: HOST env or 127.0.0.1",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PORT", "8000")),
+        help="Port to bind. Default: PORT env or 8000",
+    )
     return parser.parse_args()
 
 
