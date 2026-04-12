@@ -211,6 +211,8 @@ __marimo__/
 # Project-specific build/runtime artifacts
 frontend/node_modules/
 frontend/dist/
+frontend/.env.production
+ops_qiniu_ticket_www_dingtalk.md
 !frontend/src/lib/
 !frontend/src/lib/*.js
 backend/logs/*.log
