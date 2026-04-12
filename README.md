@@ -184,6 +184,18 @@ npm run build
 bash scripts/build_frontend_for_public.sh api.example.com
 ```
 
+推荐使用一条命令完成「发布 + CDN 缓存刷新 + 指纹一致性校验」，避免出现旧 JS/CSS 被缓存的问题：
+
+```bash
+bash scripts/deploy_frontend_with_cache_refresh.sh www.example.com <railway-web-domain>
+```
+
+示例：
+
+```bash
+bash scripts/deploy_frontend_with_cache_refresh.sh www.dingtalk.pengshz.cn dingtalk-web-production.up.railway.app
+```
+
 ### 3) 七牛上传前端静态资源
 
 - 创建公开读空间
