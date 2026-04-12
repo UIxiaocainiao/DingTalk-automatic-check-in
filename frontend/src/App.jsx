@@ -6,7 +6,11 @@ import {
   Bot,
   Bug,
   CheckCheck,
+  ChevronLeft,
+  ChevronRight,
   CirclePlay,
+  ClipboardList,
+  Download,
   FileClock,
   FolderCog,
   Gauge,
@@ -15,6 +19,7 @@ import {
   MoonStar,
   Play,
   RefreshCw,
+  Search,
   ShieldCheck,
   Smartphone,
   SquareTerminal,
@@ -36,6 +41,7 @@ import { Separator } from "./components/ui/separator";
 import { TimePicker } from "./components/ui/time-picker";
 import {
   fetchDashboard,
+  fetchCheckinRecords,
   rerollSchedule,
   runDoctor,
   runOnce,
@@ -50,6 +56,7 @@ gsap.registerPlugin(GSAPSplitText);
 const navItems = [
   { id: "overview", label: "监控总览", icon: Gauge },
   { id: "actions", label: "任务配置", icon: FolderCog },
+  { id: "records", label: "打卡记录", icon: ClipboardList },
   { id: "logs", label: "告警日志", icon: BellRing },
 ];
 
@@ -418,6 +425,11 @@ function App() {
   const [savedToggleValues, setSavedToggleValues] = useState(initialToggleState);
   const [windowValues, setWindowValues] = useState(initialWindowState);
   const [savedWindowValues, setSavedWindowValues] = useState(initialWindowState);
+  const [checkinRecords, setCheckinRecords] = useState([]);
+  const [checkinRecordsLoading, setCheckinRecordsLoading] = useState(false);
+  const [recordFilter, setRecordFilter] = useState({ date: "", type: "", status: "" });
+  const [recordPage, setRecordPage] = useState(1);
+  const [recordPageSize, setRecordPageSize] = useState(10);
 
   const quickActionSet = useMemo(
     () =>
@@ -503,6 +515,65 @@ function App() {
 
     return () => window.clearInterval(intervalId);
   }, [dashboardReady, dirtyCount, refreshDashboard]);
+
+  useEffect(() => {
+    if (!dashboardReady) return;
+
+    const loadCheckinRecords = async () => {
+      setCheckinRecordsLoading(true);
+      try {
+        const response = await fetchCheckinRecords();
+        setCheckinRecords(response.records || []);
+      } catch {
+        setCheckinRecords([]);
+      } finally {
+        setCheckinRecordsLoading(false);
+      }
+    };
+
+    loadCheckinRecords();
+  }, [dashboardReady]);
+
+  const filteredRecords = useMemo(() => {
+    return checkinRecords.filter((record) => {
+      if (recordFilter.date && record.date !== recordFilter.date) return false;
+      if (recordFilter.type && record.type !== recordFilter.type) return false;
+      if (recordFilter.status && record.status !== recordFilter.status) return false;
+      return true;
+    });
+  }, [checkinRecords, recordFilter]);
+
+  const paginatedRecords = useMemo(() => {
+    const start = (recordPage - 1) * recordPageSize;
+    return filteredRecords.slice(start, start + recordPageSize);
+  }, [filteredRecords, recordPage, recordPageSize]);
+
+  const totalRecords = filteredRecords.length;
+  const totalPages = Math.ceil(totalRecords / recordPageSize);
+
+  const handleExportRecords = useCallback(() => {
+    if (filteredRecords.length === 0) {
+      toast.error("导出失败", { description: "没有可导出的记录" });
+      return;
+    }
+
+    const headers = ["日期", "时间", "类型", "状态", "备注"];
+    const rows = filteredRecords.map((r) => [r.date, r.time, r.type, r.status, r.remark]);
+    const csv = [headers, ...rows].map((row) => row.map((cell) => `"${cell ?? ""}"`).join(",")).join("\n");
+    const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `打卡记录_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("导出成功", { description: `已导出 ${filteredRecords.length} 条记录` });
+  }, [filteredRecords]);
+
+  const handleResetFilter = useCallback(() => {
+    setRecordFilter({ date: "", type: "", status: "" });
+    setRecordPage(1);
+  }, []);
 
   const scheduleSummary = useMemo(
     () =>
@@ -2025,6 +2096,176 @@ function App() {
             </RegionSection>
 
             <RegionSection
+              title="打卡记录"
+              description="查看历史打卡记录。"
+            >
+              <div className="dashboard-layout">
+                <section id="records" className="dashboard-block dashboard-block--wide fade-up scroll-mt-28" style={{ "--delay": "180ms" }}>
+                  <Card className="region-card h-full">
+                    <CardHeader className="flex flex-col gap-4 border-b sm:flex-row sm:items-center sm:justify-between">
+                      <div className="space-y-2">
+                        <CardTitle>打卡记录列表</CardTitle>
+                        <CardDescription>查看历史打卡执行记录，支持筛选、分页和导出。</CardDescription>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-2"
+                        onClick={handleExportRecords}
+                        disabled={filteredRecords.length === 0}
+                      >
+                        <Download className="size-4" />
+                        <span>导出 CSV</span>
+                      </Button>
+                    </CardHeader>
+                    <CardContent className="region-card-content space-y-4 pt-5">
+                      {/* 筛选栏 */}
+                      <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-muted/20 p-4">
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-medium text-muted-foreground">日期</label>
+                          <Input
+                            type="date"
+                            value={recordFilter.date}
+                            onChange={(e) => { setRecordFilter((f) => ({ ...f, date: e.target.value })); setRecordPage(1); }}
+                            className="h-9 w-40"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-medium text-muted-foreground">类型</label>
+                          <select
+                            value={recordFilter.type}
+                            onChange={(e) => { setRecordFilter((f) => ({ ...f, type: e.target.value })); setRecordPage(1); }}
+                            className="h-9 w-32 rounded-md border bg-background px-3 text-sm"
+                          >
+                            <option value="">全部</option>
+                            <option value="上午打卡">上午打卡</option>
+                            <option value="下午打卡">下午打卡</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-medium text-muted-foreground">状态</label>
+                          <select
+                            value={recordFilter.status}
+                            onChange={(e) => { setRecordFilter((f) => ({ ...f, status: e.target.value })); setRecordPage(1); }}
+                            className="h-9 w-32 rounded-md border bg-background px-3 text-sm"
+                          >
+                            <option value="">全部</option>
+                            <option value="成功">成功</option>
+                            <option value="失败">失败</option>
+                          </select>
+                        </div>
+                        <Button variant="ghost" size="sm" onClick={handleResetFilter} className="h-9">
+                          重置
+                        </Button>
+                        <div className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
+                          <Search className="size-4" />
+                          <span>共 {totalRecords} 条记录</span>
+                        </div>
+                      </div>
+
+                      {checkinRecordsLoading ? (
+                        <SectionState
+                          icon={RefreshCw}
+                          title="正在加载打卡记录"
+                          detail="正在从后端获取打卡记录数据..."
+                          loading
+                        />
+                      ) : apiError ? (
+                        <SectionState
+                          icon={TriangleAlert}
+                          tone="warning"
+                          title="打卡记录暂时离线"
+                          detail="后端未连接时无法获取打卡记录，恢复连接后会自动加载。"
+                          actionLabel="刷新状态"
+                          onAction={() => handleAction("刷新设备状态")}
+                        />
+                      ) : paginatedRecords.length === 0 ? (
+                        <SectionState
+                          icon={ClipboardList}
+                          title={totalRecords === 0 ? "暂无打卡记录" : "没有符合条件的记录"}
+                          detail={totalRecords === 0 ? "执行打卡后，记录会显示在这里。" : "请尝试调整筛选条件。"}
+                        />
+                      ) : (
+                        <>
+                          <div className="overflow-x-auto rounded-lg border">
+                            <table className="w-full text-sm">
+                              <thead>
+                                <tr className="border-b bg-muted/30">
+                                  <th className="h-10 px-4 text-left font-medium">日期</th>
+                                  <th className="h-10 px-4 text-left font-medium">时间</th>
+                                  <th className="h-10 px-4 text-left font-medium">类型</th>
+                                  <th className="h-10 px-4 text-left font-medium">状态</th>
+                                  <th className="h-10 px-4 text-left font-medium">备注</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {paginatedRecords.map((record, index) => (
+                                  <tr key={index} className="border-b transition-colors hover:bg-muted/30">
+                                    <td className="px-4 py-3">{record.date || "--"}</td>
+                                    <td className="px-4 py-3">{record.time || "--"}</td>
+                                    <td className="px-4 py-3">
+                                      <Badge variant="outline" className="rounded-md">
+                                        {record.type || "--"}
+                                      </Badge>
+                                    </td>
+                                    <td className="px-4 py-3">
+                                      <Badge variant={record.status === "成功" ? "success" : record.status === "失败" ? "destructive" : "secondary"} className="rounded-md">
+                                        {record.status || "--"}
+                                      </Badge>
+                                    </td>
+                                    <td className="px-4 py-3 text-muted-foreground">{record.remark || "--"}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+
+                          {/* 分页 */}
+                          <div className="flex flex-wrap items-center justify-between gap-4">
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                              <span>每页</span>
+                              <select
+                                value={recordPageSize}
+                                onChange={(e) => { setRecordPageSize(Number(e.target.value)); setRecordPage(1); }}
+                                className="h-8 w-16 rounded-md border bg-background px-2"
+                              >
+                                <option value={10}>10</option>
+                                <option value={20}>20</option>
+                                <option value={50}>50</option>
+                              </select>
+                              <span>条</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={recordPage === 1}
+                                onClick={() => setRecordPage((p) => p - 1)}
+                              >
+                                <ChevronLeft className="size-4" />
+                              </Button>
+                              <span className="min-w-[80px] text-center text-sm">
+                                第 {recordPage} / {totalPages || 1} 页
+                              </span>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={recordPage >= totalPages}
+                                onClick={() => setRecordPage((p) => p + 1)}
+                              >
+                                <ChevronRight className="size-4" />
+                              </Button>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </CardContent>
+                  </Card>
+                </section>
+              </div>
+            </RegionSection>
+
+            <RegionSection
               title="告警日志与通知中心"
               description="统一查看提醒、告警和执行日志。"
             >
@@ -2358,9 +2599,11 @@ function RegionSection({ title, description, children }) {
       ? "overview"
       : title === "任务配置与排期管理"
         ? "config"
-        : title === "告警日志与通知中心"
-          ? "notify"
-          : "brand";
+        : title === "打卡记录"
+          ? "records"
+          : title === "告警日志与通知中心"
+            ? "notify"
+            : "brand";
 
   return (
     <section className="space-y-6" data-region-title={title} data-region-tone={tone} aria-label={description}>

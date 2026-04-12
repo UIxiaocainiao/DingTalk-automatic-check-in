@@ -47,6 +47,12 @@ ERR_LOG_FILE = Path(
         str(BASE_DIR / "logs/dingtalk-random-scheduler.err.log"),
     )
 )
+CHECKIN_RECORDS_FILE = Path(
+    os.environ.get(
+        "DINGTALK_CONSOLE_CHECKIN_RECORDS_FILE",
+        str(BASE_DIR / "logs/dingtalk-checkin-records.json"),
+    )
+)
 WINDOW_LABELS = {
     "morning": "上午窗口",
     "evening": "下午窗口",
@@ -218,6 +224,47 @@ def read_process_record() -> dict[str, Any]:
 def save_process_record(payload: dict[str, Any]) -> None:
     PROCESS_FILE.parent.mkdir(parents=True, exist_ok=True)
     PROCESS_FILE.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def read_checkin_records() -> list[dict[str, str]]:
+    """Read check-in records from the records file."""
+    if not CHECKIN_RECORDS_FILE.exists():
+        return []
+    try:
+        payload = json.loads(CHECKIN_RECORDS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    records = payload.get("records", [])
+    return records if isinstance(records, list) else []
+
+
+def save_checkin_record(record: dict[str, str]) -> None:
+    """Append a new check-in record to the records file."""
+    CHECKIN_RECORDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    records = read_checkin_records()
+    records.insert(0, record)  # 新记录插到前面
+
+    # 保留最近 500 条记录
+    records = records[:500]
+
+    CHECKIN_RECORDS_FILE.write_text(
+        json.dumps({"records": records}, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def add_checkin_record(window_name: str, status: str, remark: str = "") -> None:
+    """Add a check-in record with current timestamp."""
+    now = datetime.now()
+    record = {
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+        "type": WINDOW_LABELS.get(window_name, window_name),
+        "status": status,
+        "remark": remark,
+    }
+    save_checkin_record(record)
 
 
 def is_pid_alive(pid: int) -> bool:
@@ -711,6 +758,16 @@ def run_once() -> dict[str, Any]:
         raise ApiError(409, f"设备 {serial} 当前不可执行，状态为 {scheduler.status_summary(status)}。")
 
     scheduler.log("Manual run triggered from web console.")
+
+    # 确定当前是哪个打卡窗口
+    now = datetime.now()
+    current_time = now.time()
+    window_name = "手动执行"
+    for window in scheduler.WINDOWS:
+        if window.start <= current_time <= window.end:
+            window_name = window.name
+            break
+
     try:
         scheduler.perform_action(
             serial,
@@ -718,9 +775,14 @@ def run_once() -> dict[str, Any]:
             config["app_label"],
             int(config["delay_after_launch"]),
         )
+        # 执行成功，记录打卡
+        add_checkin_record(window_name, "成功", "手动试运行")
     except subprocess.CalledProcessError as exc:
+        # 执行失败，也记录
+        add_checkin_record(window_name, "失败", scheduler.describe_process_error(exc))
         raise ApiError(500, scheduler.describe_process_error(exc)) from exc
     except Exception as exc:
+        add_checkin_record(window_name, "失败", str(exc))
         raise ApiError(500, str(exc)) from exc
 
     return {
@@ -824,6 +886,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 with API_LOCK:
                     self.send_json(200, {"ok": True, "dashboard": build_dashboard()})
                 return
+            if path == "/api/checkin-records":
+                with API_LOCK:
+                    records = read_checkin_records()
+                    self.send_json(200, {"ok": True, "records": records})
+                return
             raise ApiError(404, f"未找到接口: {path}")
         except ApiError as exc:
             self.send_json(exc.status_code, {"ok": False, "message": exc.message})
@@ -850,6 +917,33 @@ class ApiHandler(BaseHTTPRequestHandler):
                     result = start_scheduler_process(str(payload.get("mode") or "run"))
                 elif path == "/api/actions/stop":
                     result = stop_scheduler_process()
+                elif path == "/api/checkin-records":
+                    # POST for adding a new record manually
+                    record = {
+                        "date": str(payload.get("date") or datetime.now().strftime("%Y-%m-%d")),
+                        "time": str(payload.get("time") or datetime.now().strftime("%H:%M:%S")),
+                        "type": str(payload.get("type") or "手动记录"),
+                        "status": str(payload.get("status") or "成功"),
+                        "remark": str(payload.get("remark") or ""),
+                    }
+                    save_checkin_record(record)
+                    records = read_checkin_records()
+                    self.send_json(200, {"ok": True, "message": "记录已添加", "records": records})
+                    return
+                elif path == "/api/checkin-records/delete":
+                    # POST for deleting records by index
+                    index = int(payload.get("index") or -1)
+                    records = read_checkin_records()
+                    if 0 <= index < len(records):
+                        deleted = records.pop(index)
+                        CHECKIN_RECORDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                        CHECKIN_RECORDS_FILE.write_text(
+                            json.dumps({"records": records}, indent=2, ensure_ascii=False) + "\n",
+                            encoding="utf-8",
+                        )
+                        self.send_json(200, {"ok": True, "message": "记录已删除", "deleted": deleted, "records": records})
+                        return
+                    raise ApiError(400, "无效的记录索引")
                 else:
                     raise ApiError(404, f"未找到接口: {path}")
 
