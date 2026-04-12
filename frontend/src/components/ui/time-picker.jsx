@@ -133,7 +133,7 @@ function TimePicker({
       </Button>
 
       {open ? (
-        <div className="absolute left-0 top-full z-50 mt-2 w-full min-w-[18rem] rounded-xl border bg-popover p-4 text-popover-foreground shadow-lg">
+        <div className="absolute left-0 top-full z-[12000] mt-2 w-full min-w-[18rem] rounded-xl border bg-popover p-4 text-popover-foreground shadow-lg">
           <div className={cn("grid gap-3", precision === "second" ? "grid-cols-3" : "grid-cols-2")}>
             <TimeSelect
               label="时"

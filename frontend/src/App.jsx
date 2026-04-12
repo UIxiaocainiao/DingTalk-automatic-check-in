@@ -33,6 +33,7 @@ import { gsap } from "gsap";
 import { SplitText as GSAPSplitText } from "gsap/SplitText";
 import { toast } from "sonner";
 
+import { 高级高标 } from "./components/AdvancedCursor";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
@@ -969,226 +970,6 @@ function App() {
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
-    if (window.matchMedia("(hover: none) and (pointer: coarse)").matches) return undefined;
-
-    const root = document.documentElement;
-    root.classList.add("cursor-effect-enabled");
-
-    const cursor = document.createElement("div");
-    cursor.className = "custom-cursor custom-cursor--hidden";
-    document.body.appendChild(cursor);
-
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const particleCanvas = reduceMotion ? null : document.createElement("canvas");
-    const particleCtx = particleCanvas?.getContext("2d");
-    const particleColor = theme === "dark" ? "232,228,222" : "32,36,44";
-
-    if (particleCanvas && particleCtx) {
-      particleCanvas.className = "custom-cursor-particles";
-      document.body.appendChild(particleCanvas);
-    }
-
-    let currentX = -100;
-    let currentY = -100;
-    let targetX = -100;
-    let targetY = -100;
-    let prevTargetX = -100;
-    let prevTargetY = -100;
-    let pointerSpeed = 0;
-    let cursorRaf = 0;
-    let particleRaf = 0;
-
-    const hoverSelector =
-      'a, button, [role="button"], input[type="submit"], input[type="button"], .nav__toggle, [data-cursor-hover]';
-
-    const onMouseMove = (event) => {
-      prevTargetX = targetX;
-      prevTargetY = targetY;
-      targetX = event.clientX;
-      targetY = event.clientY;
-      pointerSpeed = Math.hypot(targetX - prevTargetX, targetY - prevTargetY);
-      cursor.classList.remove("custom-cursor--hidden");
-    };
-
-    const onPointerMove = (event) => {
-      if (event.pointerType && event.pointerType !== "mouse") return;
-      targetX = event.clientX;
-      targetY = event.clientY;
-    };
-
-    const onMouseLeave = () => {
-      cursor.classList.add("custom-cursor--hidden");
-      targetX = -100;
-      targetY = -100;
-      pointerSpeed = 0;
-    };
-
-    const onMouseEnter = () => {
-      cursor.classList.remove("custom-cursor--hidden");
-    };
-
-    const onMouseOver = (event) => {
-      if (event.target instanceof Element && event.target.closest(hoverSelector)) {
-        cursor.classList.add("custom-cursor--hover");
-      }
-    };
-
-    const onMouseOut = (event) => {
-      if (event.target instanceof Element && event.target.closest(hoverSelector)) {
-        cursor.classList.remove("custom-cursor--hover");
-      }
-    };
-
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("pointermove", onPointerMove);
-    document.addEventListener("mouseleave", onMouseLeave);
-    document.addEventListener("mouseenter", onMouseEnter);
-    document.addEventListener("mouseover", onMouseOver);
-    document.addEventListener("mouseout", onMouseOut);
-
-    const animateCursor = () => {
-      currentX += (targetX - currentX) * 0.15;
-      currentY += (targetY - currentY) * 0.15;
-      cursor.style.transform = `translate(${currentX}px, ${currentY}px) translate(-50%, -50%)`;
-      cursorRaf = window.requestAnimationFrame(animateCursor);
-    };
-
-    animateCursor();
-
-    let particles = [];
-    const revealRadius = 180;
-    const repulseRadius = 140;
-    const repulseForce = 4.6;
-    const returnForce = 0.005;
-    const friction = 0.88;
-    const spacing = 44;
-    const dotSize = 1.1;
-    const connectRadius = 52;
-
-    const seedParticles = (width, height) => {
-      particles = [];
-      const cols = Math.ceil(width / spacing) + 1;
-      const rows = Math.ceil(height / spacing) + 1;
-      for (let row = 0; row < rows; row += 1) {
-        for (let col = 0; col < cols; col += 1) {
-          const homeX = col * spacing + (Math.random() - 0.5) * spacing * 0.6;
-          const homeY = row * spacing + (Math.random() - 0.5) * spacing * 0.6;
-          particles.push({
-            homeX,
-            homeY,
-            x: homeX,
-            y: homeY,
-            vx: 0,
-            vy: 0,
-            alpha: 0,
-          });
-        }
-      }
-    };
-
-    let canvasWidth = 0;
-    let canvasHeight = 0;
-    const onResize = () => {
-      if (!particleCanvas || !particleCtx) return;
-      canvasWidth = particleCanvas.width = window.innerWidth;
-      canvasHeight = particleCanvas.height = window.innerHeight;
-      seedParticles(canvasWidth, canvasHeight);
-    };
-
-    const animateParticles = () => {
-      if (!particleCanvas || !particleCtx) return;
-      particleCtx.clearRect(0, 0, canvasWidth, canvasHeight);
-
-      pointerSpeed *= 0.92;
-      const isMoving = pointerSpeed > 1.5;
-      const visible = [];
-
-      for (const particle of particles) {
-        const dx = particle.x - targetX;
-        const dy = particle.y - targetY;
-        const distance = Math.hypot(dx, dy);
-        const nearCursor = distance < revealRadius * 1.3;
-        const hasVelocity = Math.abs(particle.vx) > 0.06 || Math.abs(particle.vy) > 0.06;
-
-        if (!nearCursor && !hasVelocity && particle.alpha < 0.005) continue;
-
-        const targetAlpha =
-          isMoving && nearCursor ? Math.max(0, (1 - distance / revealRadius)) * 0.58 : 0;
-        particle.alpha += (targetAlpha - particle.alpha) * (targetAlpha > particle.alpha ? 0.12 : 0.05);
-
-        if (isMoving && distance < repulseRadius && distance > 0) {
-          const force = (1 - distance / repulseRadius) * repulseForce;
-          particle.vx += (dx / distance) * force;
-          particle.vy += (dy / distance) * force;
-          particle.vx += (Math.random() - 0.5) * 0.8;
-          particle.vy += (Math.random() - 0.5) * 0.8;
-        }
-
-        particle.vx += (particle.homeX - particle.x) * returnForce;
-        particle.vy += (particle.homeY - particle.y) * returnForce;
-        particle.vx *= friction;
-        particle.vy *= friction;
-        particle.x += particle.vx;
-        particle.y += particle.vy;
-
-        if (particle.alpha > 0.008) {
-          particleCtx.beginPath();
-          particleCtx.arc(particle.x, particle.y, dotSize, 0, Math.PI * 2);
-          particleCtx.fillStyle = `rgba(${particleColor},${particle.alpha.toFixed(3)})`;
-          particleCtx.fill();
-          visible.push(particle);
-        }
-      }
-
-      particleCtx.lineWidth = 0.3;
-      for (let i = 0; i < visible.length; i += 1) {
-        for (let j = i + 1; j < visible.length; j += 1) {
-          const a = visible[i];
-          const b = visible[j];
-          const dx = a.x - b.x;
-          const dy = a.y - b.y;
-          const distanceSquared = dx * dx + dy * dy;
-          if (distanceSquared < connectRadius * connectRadius) {
-            const distance = Math.sqrt(distanceSquared);
-            const alpha = (1 - distance / connectRadius) * Math.min(a.alpha, b.alpha) * 0.12;
-            particleCtx.beginPath();
-            particleCtx.moveTo(a.x, a.y);
-            particleCtx.lineTo(b.x, b.y);
-            particleCtx.strokeStyle = `rgba(${particleColor},${alpha.toFixed(3)})`;
-            particleCtx.stroke();
-          }
-        }
-      }
-
-      particleRaf = window.requestAnimationFrame(animateParticles);
-    };
-
-    if (particleCanvas && particleCtx) {
-      onResize();
-      window.addEventListener("resize", onResize);
-      animateParticles();
-    }
-
-    return () => {
-      window.cancelAnimationFrame(cursorRaf);
-      window.cancelAnimationFrame(particleRaf);
-
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("pointermove", onPointerMove);
-      document.removeEventListener("mouseleave", onMouseLeave);
-      document.removeEventListener("mouseenter", onMouseEnter);
-      document.removeEventListener("mouseover", onMouseOver);
-      document.removeEventListener("mouseout", onMouseOut);
-      window.removeEventListener("resize", onResize);
-
-      cursor.remove();
-      particleCanvas?.remove();
-      root.classList.remove("cursor-effect-enabled");
-    };
-  }, [theme]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return undefined;
 
     const interactiveSelector = '#stage-slideover-sidebar [data-sidebar-item="true"]';
     const segmentSelector = "path, line, polyline, polygon, rect, circle, ellipse";
@@ -1584,6 +1365,7 @@ function App() {
           "calc(var(--sidebar-inner-size) + (var(--sidebar-rail-padding) * 2) + var(--sidebar-border-width))",
       }}
     >
+      <高级高标 />
       <div className="surface-grid pointer-events-none fixed inset-0 opacity-60 dark:opacity-40" />
 
       <div
@@ -1622,7 +1404,7 @@ function App() {
           className={cn(
             "group/sidebar-rail sidebar-scrollbar fixed inset-y-0 left-0 z-40 flex w-[var(--sidebar-expanded-width)] origin-left flex-col overflow-y-auto border-r bg-background/95 p-4 backdrop-blur transition-[width,padding,transform] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 lg:p-4",
             sidebarCollapsed
-              ? "lg:w-[var(--sidebar-collapsed-width)] lg:cursor-e-resize rtl:lg:cursor-w-resize"
+              ? "lg:w-[var(--sidebar-collapsed-width)] lg:cursor-none"
               : "lg:w-[var(--sidebar-expanded-width)]",
             mobileNavOpen ? "translate-x-0" : "-translate-x-full",
           )}
@@ -1645,7 +1427,7 @@ function App() {
               style={{ "--delay": "260ms" }}
             >
               <p>版本 v0.4.0</p>
-              <p>{theme === "light" ? "shadcn/ui · Light" : "shadcn/ui · Dark"}</p>
+              <p>{theme === "light" ? "DingTalk · Light" : "DingTalk · Dark"}</p>
             </div>
           </div>
         </aside>
@@ -1907,7 +1689,7 @@ function App() {
                   </Card>
                 </section>
 
-                <section id="windows" className="dashboard-block fade-up scroll-mt-28" style={{ "--delay": "220ms" }}>
+                <section id="windows" className="dashboard-block relative z-30 fade-up scroll-mt-28" style={{ "--delay": "220ms" }}>
                   <Card className="region-card h-full">
                     <CardHeader className="flex flex-col gap-4 border-b sm:flex-row sm:items-center sm:justify-between">
                       <div className="space-y-2">
@@ -2019,7 +1801,7 @@ function App() {
                   </Card>
                 </section>
 
-                <section id="config" className="dashboard-block fade-up scroll-mt-28" style={{ "--delay": "280ms" }}>
+                <section id="config" className="dashboard-block relative z-10 fade-up scroll-mt-28" style={{ "--delay": "280ms" }}>
                   <Card className="region-card h-full">
                     <CardHeader className="flex flex-col gap-4 border-b sm:flex-row sm:items-center sm:justify-between">
                       <div className="space-y-2">
@@ -2512,7 +2294,7 @@ function LogoRegion({ collapsed, onToggleCollapse }) {
         {!collapsed ? (
           <button
             type="button"
-            className="no-draggable hidden h-9 w-9 cursor-w-resize items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none lg:flex rtl:cursor-e-resize"
+            className="no-draggable hidden h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none lg:flex"
             onClick={onToggleCollapse}
             aria-expanded="true"
             aria-controls="stage-slideover-sidebar"

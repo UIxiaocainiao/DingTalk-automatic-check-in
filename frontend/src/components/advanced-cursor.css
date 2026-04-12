@@ -1,0 +1,39 @@
+.custom-cursor {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9999;
+  width: clamp(28px, 2.3vw, 44px);
+  height: clamp(28px, 2.3vw, 44px);
+  border: 0;
+  border-radius: 9999px;
+  background: #f2ede4;
+  mix-blend-mode: difference;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  will-change: transform, width, height, opacity;
+  transition:
+    width var(--motion-medium) var(--motion-ease-soft),
+    height var(--motion-medium) var(--motion-ease-soft),
+    opacity var(--motion-fast) ease;
+}
+
+.custom-cursor--contract {
+  width: 0;
+  height: 0;
+  opacity: 0;
+}
+
+.custom-cursor--extend {
+  width: clamp(44px, 5vw, 72px);
+  height: clamp(44px, 5vw, 72px);
+  opacity: 0.78;
+}
+
+.custom-cursor--hidden {
+  opacity: 0;
+}
+
+html.sidebar-expand-cursor-active .custom-cursor {
+  opacity: 0 !important;
+}
