@@ -41,6 +41,7 @@ done
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${ROOT_DIR}"
+VERSION_SOURCE_FILE="${ROOT_DIR}/frontend/src/app-version.js"
 
 extract_assets() {
   rg -o 'index-[A-Za-z0-9_-]+\.(js|css)' | sort -u
@@ -50,8 +51,51 @@ normalize_lines() {
   sed '/^$/d' | sort -u
 }
 
+write_app_version_file() {
+  local version="$1"
+  cat > "${VERSION_SOURCE_FILE}" <<EOF
+export const APP_VERSION = "${version}";
+EOF
+}
+
+read_current_app_version() {
+  if [[ ! -f "${VERSION_SOURCE_FILE}" ]]; then
+    echo ""
+    return 0
+  fi
+  rg -o '"[0-9]+\.[0-9]+"' "${VERSION_SOURCE_FILE}" | head -n 1 | tr -d '"' || true
+}
+
+bump_minor_version() {
+  local current_version="$1"
+  if [[ ! "${current_version}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    echo ""
+    return 0
+  fi
+
+  local major minor
+  major="${current_version%%.*}"
+  minor="${current_version##*.}"
+  echo "${major}.$((minor + 1))"
+}
+
 if [[ "${SKIP_DEPLOY}" != "--skip-deploy" ]]; then
-  echo "[1/5] 发布前端到 Railway"
+  echo "[1/6] 自动递增前端版本号"
+  CURRENT_APP_VERSION="$(read_current_app_version)"
+  if [[ -z "${CURRENT_APP_VERSION}" ]]; then
+    CURRENT_APP_VERSION="1.0"
+    write_app_version_file "${CURRENT_APP_VERSION}"
+  fi
+
+  NEXT_APP_VERSION="$(bump_minor_version "${CURRENT_APP_VERSION}")"
+  if [[ -z "${NEXT_APP_VERSION}" ]]; then
+    echo "版本号格式异常（期望类似 1.0）：${CURRENT_APP_VERSION}"
+    exit 1
+  fi
+  write_app_version_file "${NEXT_APP_VERSION}"
+  echo "版本号: ${CURRENT_APP_VERSION} -> ${NEXT_APP_VERSION}"
+
+  echo "[2/6] 发布前端到 Railway"
   DEPLOY_OUTPUT="$(railway up frontend --path-as-root --detach)"
   echo "${DEPLOY_OUTPUT}"
 
@@ -61,7 +105,7 @@ if [[ "${SKIP_DEPLOY}" != "--skip-deploy" ]]; then
     exit 1
   fi
 
-  echo "[2/5] 轮询部署状态: ${TARGET_DEPLOY_ID}"
+  echo "[3/6] 轮询部署状态: ${TARGET_DEPLOY_ID}"
   for _ in {1..45}; do
     STATUS_OUTPUT="$(railway service status)"
     echo "${STATUS_OUTPUT}"
@@ -84,7 +128,7 @@ if [[ "${SKIP_DEPLOY}" != "--skip-deploy" ]]; then
   done
 fi
 
-echo "[3/5] 获取 Railway 最新 index 资源指纹"
+echo "[4/6] 获取 Railway 最新 index 资源指纹"
 RAILWAY_INDEX_HTML="$(curl -fsS -m 30 "https://${RAILWAY_DOMAIN}")"
 RAILWAY_ASSETS="$(echo "${RAILWAY_INDEX_HTML}" | extract_assets | normalize_lines)"
 if [[ -z "${RAILWAY_ASSETS}" ]]; then
@@ -93,7 +137,7 @@ if [[ -z "${RAILWAY_ASSETS}" ]]; then
 fi
 echo "${RAILWAY_ASSETS}"
 
-echo "[4/5] 刷新 ${FRONTEND_DOMAIN} CDN 缓存"
+echo "[5/6] 刷新 ${FRONTEND_DOMAIN} CDN 缓存"
 REFRESH_LIST_FILE="$(mktemp)"
 {
   echo "https://${FRONTEND_DOMAIN}/"
@@ -106,7 +150,7 @@ REFRESH_LIST_FILE="$(mktemp)"
 
 qshell cdnrefresh -i "${REFRESH_LIST_FILE}"
 
-echo "[5/5] 验证前端域名与 Railway 指纹一致"
+echo "[6/6] 验证前端域名与 Railway 指纹一致"
 SYNC_OK=0
 for _ in {1..20}; do
   FRONTEND_INDEX_HTML="$(curl -fsS -m 30 "https://${FRONTEND_DOMAIN}")"
@@ -131,6 +175,8 @@ fi
 echo "发布与缓存刷新完成："
 echo "- Frontend: https://${FRONTEND_DOMAIN}"
 echo "- Railway:  https://${RAILWAY_DOMAIN}"
+if [[ "${SKIP_DEPLOY}" != "--skip-deploy" ]]; then
+  echo "- Version:  ${NEXT_APP_VERSION}"
+fi
 echo "- Assets:"
 echo "${RAILWAY_ASSETS}"
-

@@ -196,6 +196,10 @@ bash scripts/deploy_frontend_with_cache_refresh.sh www.example.com <railway-web-
 bash scripts/deploy_frontend_with_cache_refresh.sh www.dingtalk.pengshz.cn dingtalk-web-production.up.railway.app
 ```
 
+说明：
+- 该脚本在生产发布时会自动递增前端页面版本号（从 `1.0` 开始，按 `1.0 -> 1.1 -> 1.2 ...` 递增）。
+- 版本号来源文件：`frontend/src/app-version.js`。
+
 ### 3) 七牛上传前端静态资源
 
 - 创建公开读空间

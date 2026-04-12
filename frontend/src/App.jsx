@@ -40,6 +40,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./com
 import { Input } from "./components/ui/input";
 import { Separator } from "./components/ui/separator";
 import { TimePicker } from "./components/ui/time-picker";
+import { APP_VERSION } from "./app-version";
 import {
   fetchDashboard,
   fetchCheckinRecords,
@@ -1426,7 +1427,7 @@ function App() {
               className={cn("fade-up space-y-2 text-sm leading-6 text-muted-foreground", sidebarCollapsed && "lg:hidden")}
               style={{ "--delay": "260ms" }}
             >
-              <p>版本 v0.4.0</p>
+              <p>版本 {APP_VERSION}</p>
               <p>{theme === "light" ? "DingTalk · Light" : "DingTalk · Dark"}</p>
             </div>
           </div>

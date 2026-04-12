@@ -42,6 +42,7 @@ bash scripts/deploy_frontend_with_cache_refresh.sh \
 ```
 
 该脚本会自动完成：
+- 生产发布前自动递增前端版本号（从 `1.0` 开始，`1.0 -> 1.1 -> 1.2 ...`）
 - Railway 前端发布（frontend 目录作为发布根）
 - 刷新前端域名 CDN 缓存（首页 + index.html + 最新 js/css）
 - 校验 frontend 域名与 railway 域名的资源指纹一致
@@ -100,4 +101,3 @@ curl -sS https://<railway_web_domain> | rg -o 'index-[A-Za-z0-9_-]+\.(js|css)'
 - frontend_domain: `www.dingtalk.pengshz.cn`
 - railway_web_domain: `dingtalk-web-production.up.railway.app`
 - api_domain: `dingtalk-api-production.up.railway.app`
-
