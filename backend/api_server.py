@@ -391,6 +391,16 @@ def resolve_device_snapshot(config: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             scrcpy_running = False
 
+    processed_warnings: list[str] = []
+    for warning in warnings:
+        lowered = warning.lower()
+        if lowered.startswith("adb unavailable:"):
+            processed_warnings.append(summarize_adb_connection_error(warning))
+        elif lowered.startswith("scrcpy unavailable:"):
+            processed_warnings.append(summarize_scrcpy_connection_error(warning))
+        else:
+            processed_warnings.append(warning)
+
     return {
         "serial": selected_serial,
         "summary": scheduler.status_summary(status) if status else "unavailable",
@@ -398,7 +408,7 @@ def resolve_device_snapshot(config: dict[str, Any]) -> dict[str, Any]:
         "authorized": bool(status and status.state == "device"),
         "usbConnected": bool(status and status.usb_connected),
         "rawLine": status.raw_line if status else "",
-        "warningMessages": warnings,
+        "warningMessages": processed_warnings,
         "error": error,
         "adbAvailable": bool(adb_bin),
         "adbBin": adb_bin or "",
@@ -433,6 +443,14 @@ def summarize_adb_connection_error(message: str) -> str:
         return "设备处于 offline：请重新插拔 USB，或在手机上重新授权 USB 调试。"
 
     return normalized[:500] if normalized else "ADB 连接异常"
+
+
+def summarize_scrcpy_connection_error(message: str) -> str:
+    normalized = " ".join(message.strip().split())
+    lowered = normalized.lower()
+    if "not found" in lowered or "not executable" in lowered:
+        return "scrcpy 未安装或路径不可执行：请安装 scrcpy 或在前台配置 scrcpy_bin。"
+    return normalized[:500] if normalized else "scrcpy 不可用"
 
 
 def derive_last_success(state: scheduler.SchedulerState) -> dict[str, str]:

@@ -255,9 +255,11 @@ def resolve_binary(binary_name: str, configured_path: str | None, candidates: tu
         if resolved:
             return resolved
 
-    raise RuntimeError(
-        f"{binary_name} not found. Run scripts/install_platform_tools.py or pass the explicit path."
-    )
+    if binary_name == "adb":
+        hint = "Run scripts/install_platform_tools.py or pass the explicit path."
+    else:
+        hint = f"Install {binary_name} or pass the explicit path."
+    raise RuntimeError(f"{binary_name} not found. {hint}")
 
 
 def is_under(path: Path, parent: Path) -> bool:
