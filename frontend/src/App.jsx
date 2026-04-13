@@ -742,8 +742,14 @@ function App() {
     const morningWindow = getWindowFromDashboard(dashboard, "morning");
     const eveningWindow = getWindowFromDashboard(dashboard, "evening");
     const workdayState = dashboard?.workday;
+    const connectorLabel = apiError
+      ? "离线 / 无法读取后端"
+      : dashboard?.generatedAt
+        ? `在线 / ${dashboard.generatedAt.replace("T", " ").split(".")[0]}`
+        : "在线 / 等待时间戳";
 
     return [
+      ["连接器状态", connectorLabel, true],
       [
         "设备状态",
         dashboard?.device?.error
@@ -779,7 +785,7 @@ function App() {
             : `${workdayState?.checkedDate ?? "待校验"} / ${workdayState?.note ?? "待返回"}`,
       ],
     ];
-  }, [dashboard, toggleValues, windowValues]);
+  }, [apiError, dashboard, toggleValues, windowValues]);
 
   const statusTags = dashboard?.statusTags ?? ["等待后端状态"];
   const toggles = dashboard?.toggles ?? [];
@@ -2179,15 +2185,30 @@ function App() {
                             <CardContent className="flex flex-1 flex-col">
                               <div className="grid gap-4 md:grid-cols-2">
                                 {group.fields.map((field) => (
-                                  <Field
-                                    key={field.label}
-                                    label={field.label}
-                                    value={configValues[field.label]}
-                                    onChange={(event) => handleConfigChange(field.label, event.target.value)}
-                                    dirty={isConfigFieldDirty(field.label)}
-                                    error={validation[field.label]}
-                                    helper={field.helper}
-                                  />
+                                  field.key === "serial" ? (
+                                    <SerialField
+                                      key={field.label}
+                                      label={field.label}
+                                      value={configValues[field.label]}
+                                      onChange={(nextValue) => handleConfigChange(field.label, nextValue)}
+                                      dirty={isConfigFieldDirty(field.label)}
+                                      error={validation[field.label]}
+                                      helper={field.helper}
+                                      devices={deviceState?.devices ?? []}
+                                      deviceCount={deviceState?.deviceCount ?? 0}
+                                      onRefresh={() => handleAction("刷新设备状态")}
+                                    />
+                                  ) : (
+                                    <Field
+                                      key={field.label}
+                                      label={field.label}
+                                      value={configValues[field.label]}
+                                      onChange={(event) => handleConfigChange(field.label, event.target.value)}
+                                      dirty={isConfigFieldDirty(field.label)}
+                                      error={validation[field.label]}
+                                      helper={field.helper}
+                                    />
+                                  )
                                 ))}
                               </div>
                             </CardContent>
@@ -2259,7 +2280,7 @@ function App() {
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-xs font-medium text-muted-foreground">类型</label>
-                          <select
+            <select
                             value={recordFilter.type}
                             onChange={(e) => { setRecordFilter((f) => ({ ...f, type: e.target.value })); setRecordPage(1); }}
                             className="h-9 w-32 rounded-md border bg-background px-3 text-sm"
@@ -3341,6 +3362,82 @@ function Field({ label, dirty, error, helper, ...props }) {
         aria-invalid={Boolean(error)}
         {...props}
       />
+      {error ? <p className="text-xs text-red-600 dark:text-red-400">{error}</p> : null}
+      {helper ? <p className="text-xs leading-6 text-muted-foreground">{helper}</p> : null}
+    </label>
+  );
+}
+
+function SerialField({
+  label,
+  dirty,
+  error,
+  helper,
+  value,
+  onChange,
+  devices,
+  deviceCount,
+  onRefresh,
+}) {
+  const showSelector = devices.length > 0;
+  const deviceHint = deviceCount > devices.length ? `仅展示前 ${devices.length} 台` : "";
+  const hasCurrentValue = Boolean(value) && !devices.some((device) => device.serial === value);
+
+  return (
+    <label className="space-y-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-medium">{label}</span>
+        {dirty ? (
+          <Badge variant="outline" className="rounded-md text-xs">
+            已修改
+          </Badge>
+        ) : null}
+      </div>
+      {showSelector ? (
+        <div className="space-y-2">
+          <select
+            className={cn(
+              "h-10 w-full rounded-lg border border-border bg-background/80 px-3 text-sm",
+              dirty && "border-zinc-400 dark:border-zinc-500",
+              error && "border-red-400 focus-visible:ring-red-300 dark:border-red-500 dark:focus-visible:ring-red-900",
+            )}
+            value={value ?? ""}
+            onChange={(event) => onChange(event.target.value)}
+          >
+            <option value="">自动选择（唯一在线设备）</option>
+            {hasCurrentValue ? <option value={value}>{value} (已配置)</option> : null}
+            {devices.map((device) => (
+              <option key={device.serial} value={device.serial}>
+                {device.serial} ({device.state ?? "unknown"}
+                {device.usbConnected ? "/usb" : ""})
+              </option>
+            ))}
+          </select>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            {deviceHint ? <span>{deviceHint}</span> : null}
+            {onRefresh ? (
+              <button
+                type="button"
+                className="underline decoration-dotted underline-offset-4"
+                onClick={onRefresh}
+              >
+                刷新设备列表
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : (
+        <Input
+          className={cn(
+            "h-10 rounded-lg bg-background/80",
+            dirty && "border-zinc-400 dark:border-zinc-500",
+            error && "border-red-400 focus-visible:ring-red-300 dark:border-red-500 dark:focus-visible:ring-red-900",
+          )}
+          value={value ?? ""}
+          onChange={(event) => onChange(event.target.value)}
+          aria-invalid={Boolean(error)}
+        />
+      )}
       {error ? <p className="text-xs text-red-600 dark:text-red-400">{error}</p> : null}
       {helper ? <p className="text-xs leading-6 text-muted-foreground">{helper}</p> : null}
     </label>
