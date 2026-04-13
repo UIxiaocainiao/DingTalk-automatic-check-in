@@ -207,6 +207,13 @@ const actions = [
     note: "重启 adb server，适合连接异常或 5037 端口占用时使用。",
   },
   {
+    label: "连接向导",
+    style: "secondary",
+    icon: CircleHelp,
+    group: "support",
+    note: "按步骤完成 ADB 安装、授权与设备绑定。",
+  },
+  {
     label: "试运行",
     style: "secondary",
     icon: Bot,
@@ -502,6 +509,11 @@ function App() {
   const [recordFilter, setRecordFilter] = useState({ date: "", type: "", status: "" });
   const [recordPage, setRecordPage] = useState(1);
   const [recordPageSize, setRecordPageSize] = useState(10);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardDismissed, setWizardDismissed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("adb-wizard-dismissed") === "1";
+  });
 
   const quickActionSet = useMemo(
     () =>
@@ -513,6 +525,7 @@ function App() {
         "查看排期",
         "刷新设备状态",
         "重启 ADB",
+        "连接向导",
         "停止任务",
         "调试模式",
         "试运行",
@@ -520,6 +533,34 @@ function App() {
       ]),
     [],
   );
+
+  const copyToClipboard = useCallback((text, label = "已复制到剪贴板") => {
+    if (!text) return;
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      toast.error("当前环境不支持一键复制");
+      return;
+    }
+    navigator.clipboard
+      .writeText(text)
+      .then(() => toast.success(label))
+      .catch(() => toast.error("复制失败，请手动复制"));
+  }, []);
+
+  const openWizard = useCallback(() => {
+    setWizardOpen(true);
+    setWizardDismissed(false);
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem("adb-wizard-dismissed");
+    }
+  }, []);
+
+  const closeWizard = useCallback(() => {
+    setWizardOpen(false);
+    setWizardDismissed(true);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("adb-wizard-dismissed", "1");
+    }
+  }, []);
 
   const dirtyCount = useMemo(() => {
     const configDirty = Object.keys(configValues).filter(
@@ -745,9 +786,27 @@ function App() {
   const logs = dashboard?.logs ?? [];
   const timeline = dashboard?.timeline ?? [];
   const alerts = dashboard?.alerts ?? [];
+  const deviceState = dashboard?.device;
   const primaryActions = actions.filter((item) => item.group === "primary");
   const runtimeActions = actions.filter((item) => item.group === "runtime");
   const supportActions = actions.filter((item) => item.group === "support");
+
+  const needsConnectionGuide = useMemo(() => {
+    if (apiError) return true;
+    if (!dashboardReady || !deviceState) return false;
+    if (!deviceState.adbAvailable) return true;
+    if (deviceState.deviceCount === 0) return true;
+    if (deviceState.unauthorizedCount > 0) return true;
+    if (deviceState.deviceCount > 1 && !deviceState.serial) return true;
+    if (deviceState.error) return true;
+    return false;
+  }, [apiError, dashboardReady, deviceState]);
+
+  useEffect(() => {
+    if (needsConnectionGuide && !wizardDismissed) {
+      setWizardOpen(true);
+    }
+  }, [needsConnectionGuide, wizardDismissed]);
 
   const validation = useMemo(() => {
     const next = {};
@@ -1254,6 +1313,12 @@ function App() {
     });
   };
 
+  const scrollToSection = useCallback((id) => {
+    const target = document.getElementById(id);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
   const handleNavClick = (event, id) => {
     setMobileNavOpen(false);
     if (id === "guide") {
@@ -1301,6 +1366,11 @@ function App() {
 
   const handleAction = async (label) => {
     if (!quickActionSet.has(label)) return;
+
+    if (label === "连接向导") {
+      openWizard();
+      return;
+    }
 
     if ((label === "保存配置" || label === "启动任务" || label === "调试模式") && hasBlockingIssues) {
       toast.warning("请先修复阻断问题", {
@@ -1378,6 +1448,129 @@ function App() {
       setPendingAction((current) => (current === label ? "" : current));
     }
   };
+
+  const wizardSteps = useMemo(() => {
+    const steps = [];
+    const adbInstallCommand = deviceState?.adbInstallHint || "python3 scripts/install_platform_tools.py";
+    const backendCommand = "python3 backend/api_server.py";
+    const deviceCount = deviceState?.deviceCount ?? 0;
+    const onlineCount = deviceState?.onlineCount ?? 0;
+    const unauthorizedCount = deviceState?.unauthorizedCount ?? 0;
+    const serial = deviceState?.serial ?? "";
+    const adbError = deviceState?.error ?? "";
+    const needsSerial = deviceCount > 1 && !serial;
+    const needsAdbRestart = /ADB 服务启动失败|daemon|5037/i.test(adbError);
+
+    steps.push({
+      key: "backend",
+      title: "启动后端服务",
+      detail: "确保本机的 api_server 正在运行，否则无法读取设备状态。",
+      done: !apiError,
+      code: backendCommand,
+      primaryAction: {
+        label: "复制启动命令",
+        onClick: () => copyToClipboard(backendCommand, "启动命令已复制"),
+      },
+      secondaryAction: {
+        label: "我已启动，刷新",
+        onClick: () => handleAction("刷新设备状态"),
+      },
+    });
+
+    steps.push({
+      key: "adb",
+      title: "安装 ADB",
+      detail: deviceState?.adbAvailable
+        ? "已检测到 ADB，可进入下一步。"
+        : "安装官方 platform-tools，或在前台配置 adb_bin。",
+      done: Boolean(deviceState?.adbAvailable),
+      code: adbInstallCommand,
+      primaryAction: {
+        label: "复制安装命令",
+        onClick: () => copyToClipboard(adbInstallCommand, "安装命令已复制"),
+      },
+      secondaryAction: {
+        label: "我已安装，刷新",
+        onClick: () => handleAction("刷新设备状态"),
+      },
+    });
+
+    steps.push({
+      key: "device-connect",
+      title: "连接设备",
+      detail:
+        deviceCount > 0
+          ? `已检测到 ${deviceCount} 台设备，在线 ${onlineCount} 台。`
+          : "未检测到设备，请连接 USB 并开启 USB 调试。",
+      done: deviceCount > 0,
+      primaryAction: {
+        label: "刷新设备状态",
+        onClick: () => handleAction("刷新设备状态"),
+      },
+    });
+
+    steps.push({
+      key: "authorize",
+      title: "完成 USB 调试授权",
+      detail:
+        unauthorizedCount > 0
+          ? `检测到 ${unauthorizedCount} 台设备未授权，请在手机上点击允许 USB 调试。`
+          : "已授权或未发现未授权设备。",
+      done: unauthorizedCount === 0,
+      primaryAction: {
+        label: "刷新设备状态",
+        onClick: () => handleAction("刷新设备状态"),
+      },
+    });
+
+    steps.push({
+      key: "bind-serial",
+      title: "绑定目标设备",
+      detail: needsSerial
+        ? `当前检测到 ${deviceCount} 台设备，请在“设备与应用”里配置 serial。`
+        : serial
+          ? `已绑定 serial: ${serial}`
+          : "当前无需绑定 serial。",
+      done: !needsSerial,
+      primaryAction: needsSerial
+        ? {
+            label: "去配置 serial",
+            onClick: () => scrollToSection("config"),
+          }
+        : null,
+    });
+
+    if (needsAdbRestart) {
+      steps.push({
+        key: "adb-restart",
+        title: "重启 ADB 服务",
+        detail: "当前检测到 ADB daemon 启动异常，建议重启。",
+        done: false,
+        primaryAction: {
+          label: "重启 ADB",
+          onClick: () => handleAction("重启 ADB"),
+        },
+      });
+    }
+
+    steps.push({
+      key: "doctor",
+      title: "执行一键自检",
+      detail: deviceState?.ready ? "设备已就绪，建议执行一次自检确认链路。" : "自检可确认设备与依赖是否可用。",
+      done: Boolean(deviceState?.ready),
+      primaryAction: {
+        label: "一键自检",
+        onClick: () => handleAction("一键自检"),
+      },
+    });
+
+    return steps;
+  }, [apiError, copyToClipboard, deviceState, handleAction, scrollToSection]);
+
+  const activeWizardStep = useMemo(() => {
+    if (!wizardSteps.length) return null;
+    return wizardSteps.find((step) => !step.done) ?? wizardSteps[wizardSteps.length - 1];
+  }, [wizardSteps]);
 
   const configDirtyCount = Object.keys(configValues).filter(
     (key) => configValues[key] !== savedConfigValues[key],
@@ -1512,6 +1705,13 @@ function App() {
       }}
     >
       <AdvancedCursor />
+      <ConnectionWizard
+        open={wizardOpen}
+        steps={wizardSteps}
+        activeStep={activeWizardStep}
+        onClose={closeWizard}
+        onRefresh={() => handleAction("刷新设备状态")}
+      />
       <div className="surface-grid pointer-events-none fixed inset-0 opacity-60 dark:opacity-40" />
 
       <div
@@ -2522,6 +2722,95 @@ function FocusStrip({ focus }) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function ConnectionWizard({ open, steps, activeStep, onClose, onRefresh }) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 py-10 backdrop-blur-sm">
+      <div className="w-full max-w-4xl">
+        <Card className="shadow-2xl">
+          <CardHeader className="flex flex-col gap-4 border-b sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-2">
+              <CardTitle>连接向导</CardTitle>
+              <CardDescription>按步骤完成 ADB 安装、设备授权与绑定。</CardDescription>
+            </div>
+            <Button variant="ghost" size="icon" onClick={onClose}>
+              <X className="size-4" />
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-5">
+            <div className="grid gap-3">
+              {steps.map((step, index) => {
+                const isActive = activeStep?.key === step.key;
+                const badgeTone = step.done ? "success" : isActive ? "warning" : "outline";
+                return (
+                  <div
+                    key={step.key}
+                    className={cn(
+                      "rounded-xl border p-4",
+                      step.done ? "bg-muted/20" : "bg-background",
+                      isActive && !step.done ? "border-foreground/20" : "border-border/70",
+                    )}
+                  >
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant={badgeTone} className="rounded-md">
+                            {step.done ? "已完成" : isActive ? "进行中" : "待处理"}
+                          </Badge>
+                          <p className="text-sm font-medium">{`${index + 1}. ${step.title}`}</p>
+                        </div>
+                        <p className="text-sm leading-6 text-muted-foreground">{step.detail}</p>
+                        {step.code ? (
+                          <pre className="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-foreground">
+                            {step.code}
+                          </pre>
+                        ) : null}
+                      </div>
+                      {step.done ? (
+                        <Badge variant="outline" className="rounded-md">
+                          OK
+                        </Badge>
+                      ) : null}
+                    </div>
+                    {!step.done && (step.primaryAction || step.secondaryAction) ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {step.primaryAction ? (
+                          <Button size="sm" onClick={step.primaryAction.onClick}>
+                            {step.primaryAction.label}
+                          </Button>
+                        ) : null}
+                        {step.secondaryAction ? (
+                          <Button variant="outline" size="sm" onClick={step.secondaryAction.onClick}>
+                            {step.secondaryAction.label}
+                          </Button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-muted-foreground">
+                每完成一步建议点击“刷新状态”，让控制台同步最新设备信息。
+              </p>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={onClose}>
+                  稍后
+                </Button>
+                <Button size="sm" onClick={onRefresh}>
+                  刷新状态
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
   );
 }
 
