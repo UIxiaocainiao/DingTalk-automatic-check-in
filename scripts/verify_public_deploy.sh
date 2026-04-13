@@ -42,7 +42,7 @@ fi
 while IFS= read -r asset_path; do
   [[ -z "${asset_path}" ]] && continue
   ASSET_URL="${FRONTEND_URL}${asset_path}"
-  if ! curl --http1.1 -fsS -o /dev/null "${ASSET_URL}"; then
+  if ! curl --http1.1 --compressed -fsS -o /dev/null "${ASSET_URL}"; then
     echo "静态资源不可访问: ${ASSET_URL}"
     exit 1
   fi

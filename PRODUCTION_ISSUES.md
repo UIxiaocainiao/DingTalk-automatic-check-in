@@ -103,3 +103,32 @@
 - `qshell stat dingtalkpengshzz2 assets/index-CeYyhsxp.js`
 - `qshell stat dingtalkpengshzz2 assets/index-DCSFO2Y0.css`
 - `qshell stat dingtalkpengshzz2 assets/index-CBFxO396.js`
+
+## 2026-04-13 18:26 CST 修复记录
+
+已完成：
+- GitHub `main` 已推送提交 `ffc03844`。
+- 重新将 `frontend/` 显式部署到 Railway `dingtalk-web` 服务：
+  - Deployment ID：`22a0d1d0-af1a-411d-acd1-8277b2f266ec`
+  - 状态：`SUCCESS`
+  - 构建镜像：`node:20-alpine`
+  - 运行日志：`INFO  Accepting connections at http://localhost:8080`
+- Railway 前端源站已恢复：
+  - `https://dingtalk-web-production.up.railway.app/` 返回 `200`
+  - `https://dingtalk-web-production.up.railway.app/assets/index-CeYyhsxp.js` 返回 `200`
+  - `https://dingtalk-web-production.up.railway.app/assets/index-DCSFO2Y0.css` 返回 `200`
+- 已执行七牛 CDN 刷新：
+  - `bash scripts/deploy_frontend_with_cache_refresh.sh www.dingtalk.pengshz.cn dingtalk-web-production.up.railway.app --skip-deploy`
+  - 刷新结果：`CDN refresh Code: 200, FlowInfo: success`
+  - 资源指纹：`index-CeYyhsxp.js` / `index-DCSFO2Y0.css`
+- 已执行公网验收：
+  - `bash scripts/verify_public_deploy.sh www.dingtalk.pengshz.cn dingtalk-api-production.up.railway.app`
+  - 结果：通过
+
+仍存在：
+- 生产 API 仍显示业务执行环境未就绪：
+  - 调度器 `running: false`
+  - `adbAvailable: false`
+  - `scrcpyAvailable: false`
+  - 设备数 `deviceCount: 0`
+- 这部分不是前端发布问题，需要在可访问本机 USB/ADB 的设备连接器环境中修复配置并启动调度器。
