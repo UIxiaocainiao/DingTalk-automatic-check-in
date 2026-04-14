@@ -57,6 +57,10 @@ WINDOW_LABELS = {
     "morning": "上午窗口",
     "evening": "下午窗口",
 }
+CHECKIN_TYPE_LABELS = {
+    "morning": "上午打卡",
+    "evening": "下午打卡",
+}
 API_LOCK = threading.Lock()
 
 
@@ -235,7 +239,40 @@ def read_checkin_records() -> list[dict[str, str]]:
     except Exception:
         return []
     records = payload.get("records", [])
-    return records if isinstance(records, list) else []
+    if not isinstance(records, list):
+        return []
+
+    normalized_records: list[dict[str, str]] = []
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        normalized_records.append(
+            {
+                "date": str(item.get("date", "")).strip(),
+                "time": str(item.get("time", "")).strip(),
+                "type": normalize_checkin_type(item.get("type", "")),
+                "status": str(item.get("status", "")).strip(),
+                "remark": str(item.get("remark", "")).strip(),
+            }
+        )
+    return normalized_records
+
+
+def normalize_checkin_type(raw_value: Any) -> str:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return "手动记录"
+
+    aliases = {
+        "morning": "上午打卡",
+        "上午窗口": "上午打卡",
+        "上午打卡": "上午打卡",
+        "evening": "下午打卡",
+        "下午窗口": "下午打卡",
+        "下午打卡": "下午打卡",
+    }
+    lowered = raw.lower()
+    return aliases.get(lowered, aliases.get(raw, raw))
 
 
 def save_checkin_record(record: dict[str, str]) -> None:
@@ -260,7 +297,7 @@ def add_checkin_record(window_name: str, status: str, remark: str = "") -> None:
     record = {
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M:%S"),
-        "type": WINDOW_LABELS.get(window_name, window_name),
+        "type": normalize_checkin_type(CHECKIN_TYPE_LABELS.get(window_name, window_name)),
         "status": status,
         "remark": remark,
     }
@@ -1059,7 +1096,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                     record = {
                         "date": str(payload.get("date") or recorded_at.strftime("%Y-%m-%d")),
                         "time": str(payload.get("time") or recorded_at.strftime("%H:%M:%S")),
-                        "type": str(payload.get("type") or "手动记录"),
+                        "type": normalize_checkin_type(payload.get("type") or "手动记录"),
                         "status": str(payload.get("status") or "成功"),
                         "remark": str(payload.get("remark") or ""),
                     }

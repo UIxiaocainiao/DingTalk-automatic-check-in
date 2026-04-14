@@ -184,6 +184,23 @@ const windowsData = [
   },
 ];
 
+const checkinTypeOptions = ["上午打卡", "下午打卡"];
+
+function normalizeCheckinType(rawValue) {
+  const raw = String(rawValue ?? "").trim();
+  if (!raw) return "手动记录";
+
+  const aliases = {
+    morning: "上午打卡",
+    "上午窗口": "上午打卡",
+    "上午打卡": "上午打卡",
+    evening: "下午打卡",
+    "下午窗口": "下午打卡",
+    "下午打卡": "下午打卡",
+  };
+  return aliases[raw] ?? aliases[raw.toLowerCase()] ?? raw;
+}
+
 const actions = [
   {
     label: "一键自检",
@@ -632,7 +649,12 @@ function App() {
   const filteredRecords = useMemo(() => {
     return checkinRecords.filter((record) => {
       if (recordFilter.date && record.date !== recordFilter.date) return false;
-      if (recordFilter.type && record.type !== recordFilter.type) return false;
+      if (
+        recordFilter.type &&
+        normalizeCheckinType(record.type) !== normalizeCheckinType(recordFilter.type)
+      ) {
+        return false;
+      }
       if (recordFilter.status && record.status !== recordFilter.status) return false;
       return true;
     });
@@ -653,7 +675,13 @@ function App() {
     }
 
     const headers = ["日期", "时间", "类型", "状态", "备注"];
-    const rows = filteredRecords.map((r) => [r.date, r.time, r.type, r.status, r.remark]);
+    const rows = filteredRecords.map((r) => [
+      r.date,
+      r.time,
+      normalizeCheckinType(r.type),
+      r.status,
+      r.remark,
+    ]);
     const csv = [headers, ...rows].map((row) => row.map((cell) => `"${cell ?? ""}"`).join(",")).join("\n");
     const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -2264,14 +2292,17 @@ function App() {
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-xs font-medium text-muted-foreground">类型</label>
-            <select
+                          <select
                             value={recordFilter.type}
                             onChange={(e) => { setRecordFilter((f) => ({ ...f, type: e.target.value })); setRecordPage(1); }}
                             className="h-9 w-32 rounded-md border bg-background px-3 text-sm"
                           >
                             <option value="">全部</option>
-                            <option value="上午打卡">上午打卡</option>
-                            <option value="下午打卡">下午打卡</option>
+                            {checkinTypeOptions.map((type) => (
+                              <option key={type} value={type}>
+                                {type}
+                              </option>
+                            ))}
                           </select>
                         </div>
                         <div className="space-y-1.5">
@@ -2337,7 +2368,7 @@ function App() {
                                     <td className="px-4 py-3">{record.time || "--"}</td>
                                     <td className="px-4 py-3">
                                       <Badge variant="outline" className="rounded-md">
-                                        {record.type || "--"}
+                                        {normalizeCheckinType(record.type) || "--"}
                                       </Badge>
                                     </td>
                                     <td className="px-4 py-3">

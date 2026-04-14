@@ -69,6 +69,7 @@ def main() -> int:
         process_file = temp_path / "scheduler.process.json"
         log_file = temp_path / "scheduler.log"
         err_log_file = temp_path / "scheduler.err.log"
+        checkin_records_file = temp_path / "checkin-records.json"
         server_log = temp_path / "api-server.log"
 
         config_file.write_text(
@@ -105,6 +106,7 @@ def main() -> int:
         env["DINGTALK_CONSOLE_PROCESS_FILE"] = str(process_file)
         env["DINGTALK_CONSOLE_LOG_FILE"] = str(log_file)
         env["DINGTALK_CONSOLE_ERR_LOG_FILE"] = str(err_log_file)
+        env["DINGTALK_CONSOLE_CHECKIN_RECORDS_FILE"] = str(checkin_records_file)
 
         with server_log.open("w", encoding="utf-8") as output:
             server = subprocess.Popen(
@@ -212,6 +214,16 @@ def main() -> int:
             status, payload = api_request("POST", "/api/actions/start", {"mode": "bad-mode"})
             assert status == 400 and payload.get("ok") is False
             print("start invalid mode: ok")
+
+            status, payload = api_request(
+                "POST",
+                "/api/checkin-records",
+                {"type": "下午窗口", "status": "成功", "remark": "兼容性测试"},
+            )
+            assert status == 200 and payload.get("ok") is True
+            assert payload.get("records"), "records should not be empty after insert"
+            assert payload["records"][0]["type"] == "下午打卡"
+            print("checkin type normalize: ok")
 
         finally:
             if server.poll() is None:

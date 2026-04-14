@@ -48,12 +48,20 @@ PLATFORM_TOOLS_DIR = Path(
 ).expanduser()
 DEFAULT_STATE_FILE = str(BASE_DIR / "logs/dingtalk-random-scheduler.state.json")
 DEFAULT_CONFIG_FILE = str(BASE_DIR / "runtime/console-config.json")
+DEFAULT_CHECKIN_RECORDS_FILE = str(BASE_DIR / "logs/dingtalk-checkin-records.json")
 DEFAULT_WORKDAY_API_URL = "https://holiday.dreace.top?date={date}"
 DEFAULT_WORKDAY_API_TIMEOUT = 5.0
 BEIJING_TZ = ZoneInfo("Asia/Shanghai") if ZoneInfo else timezone(timedelta(hours=8), "CST")
 OSASCRIPT_BIN = "/usr/bin/osascript"
 ADB_BIN = "adb"
 SCRCPY_BIN = "scrcpy"
+CHECKIN_RECORDS_FILE = Path(
+    os.environ.get("DINGTALK_CONSOLE_CHECKIN_RECORDS_FILE", DEFAULT_CHECKIN_RECORDS_FILE)
+).expanduser()
+CHECKIN_TYPE_LABELS = {
+    "morning": "上午打卡",
+    "evening": "下午打卡",
+}
 
 
 def host_platform_key() -> str:
@@ -862,6 +870,73 @@ def save_scheduler_state(path: Path, state: SchedulerState) -> None:
     temp_path.replace(path)
 
 
+def normalize_checkin_type(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        return "手动记录"
+    aliases = {
+        "morning": "上午打卡",
+        "上午窗口": "上午打卡",
+        "上午打卡": "上午打卡",
+        "evening": "下午打卡",
+        "下午窗口": "下午打卡",
+        "下午打卡": "下午打卡",
+    }
+    return aliases.get(raw.lower(), aliases.get(raw, raw))
+
+
+def read_checkin_records() -> list[dict[str, str]]:
+    if not CHECKIN_RECORDS_FILE.exists():
+        return []
+
+    try:
+        payload = json.loads(CHECKIN_RECORDS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    records = payload.get("records", [])
+    if not isinstance(records, list):
+        return []
+
+    normalized_records: list[dict[str, str]] = []
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        normalized_records.append(
+            {
+                "date": str(item.get("date", "")).strip(),
+                "time": str(item.get("time", "")).strip(),
+                "type": normalize_checkin_type(str(item.get("type", "")).strip()),
+                "status": str(item.get("status", "")).strip(),
+                "remark": str(item.get("remark", "")).strip(),
+            }
+        )
+    return normalized_records
+
+
+def save_checkin_records(records: list[dict[str, str]]) -> None:
+    CHECKIN_RECORDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CHECKIN_RECORDS_FILE.write_text(
+        json.dumps({"records": records[:500]}, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def add_checkin_record(window_name: str, status: str, remark: str = "") -> None:
+    now = now_beijing()
+    record = {
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+        "type": normalize_checkin_type(CHECKIN_TYPE_LABELS.get(window_name, window_name)),
+        "status": status.strip() or "未知",
+        "remark": remark.strip()[:500],
+    }
+
+    records = read_checkin_records()
+    records.insert(0, record)
+    save_checkin_records(records)
+
+
 def reschedule_window(state: SchedulerState, window: TimeWindow, anchor_day: date) -> None:
     state.next_runs[window.name] = random_datetime_for_window(anchor_day + timedelta(days=1), window)
 
@@ -986,9 +1061,13 @@ def process_due_windows(config: Config, state: SchedulerState) -> None:
 
         log(f"Executing {window.name} action scheduled for {format_timestamp(scheduled_time)}.")
         action_succeeded = False
+        checkin_status = "失败"
+        checkin_remark = ""
         try:
             perform_action(config.serial, config.package, config.app_label, config.delay_after_launch)
             action_succeeded = True
+            checkin_status = "成功"
+            checkin_remark = "自动执行"
             state.last_completed_dates[window.name] = scheduled_time.date()
             completion_message: str | None = None
             if window.name == "morning":
@@ -1007,13 +1086,19 @@ def process_due_windows(config: Config, state: SchedulerState) -> None:
         except subprocess.CalledProcessError as exc:
             details = describe_process_error(exc)
             log(f"adb command failed: {details}")
+            checkin_remark = details
             notify_user("DingTalk automation failed", details[:180])
         except Exception as exc:
             log(f"Unexpected error during scheduled action: {exc}")
+            checkin_remark = str(exc)
             notify_user("DingTalk automation failed", str(exc)[:180])
         finally:
             reschedule_window(state, window, scheduled_time.date())
             save_scheduler_state(config.state_file, state)
+            try:
+                add_checkin_record(window.name, checkin_status, checkin_remark)
+            except Exception as exc:
+                log(f"Failed to persist check-in record for {window.name}: {exc}")
             outcome = "completed" if action_succeeded else "finished with errors"
             log(
                 f"{window.name} action {outcome}. "
