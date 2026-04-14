@@ -1,0 +1,2 @@
+-- Base schema placeholder for future relational persistence.
+-- Current runtime uses JSON files under backend/logs and backend/runtime.

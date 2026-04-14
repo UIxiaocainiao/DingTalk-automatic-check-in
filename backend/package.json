@@ -1,0 +1,10 @@
+{
+  "name": "dingtalk-backend-scaffold",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Base Node-style backend scaffold for project structure alignment",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  }
+}

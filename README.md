@@ -14,28 +14,67 @@
 
 ## Repository Structure
 
+已按“基础版”完成目录整理，当前结构如下：
+
 ```text
-.
-├─ backend/
-│  ├─ dingtalk_random_scheduler.py         # 核心调度器（CLI）
-│  ├─ api_server.py                        # 控制台 HTTP API
-│  ├─ test_api_integrity.py                # API 冒烟测试
-│  ├─ runtime/console-config.json          # 前端保存的运行配置
-│  ├─ logs/                                # 状态、日志、打卡记录
-│  ├─ Dockerfile
-│  └─ com.pengshz.dingtalk-random-scheduler.plist
-├─ frontend/
-│  ├─ src/
-│  ├─ package.json
-│  ├─ vite.config.js
-│  └─ Dockerfile
-├─ scripts/
-│  ├─ install_platform_tools.py
-│  ├─ build_frontend_for_public.sh
-│  ├─ deploy_frontend_with_cache_refresh.sh
-│  └─ verify_public_deploy.sh
-└─ README.md
+DingTalk-automatic-check-in/
+├── frontend/                          # 前端页面
+│   ├── public/
+│   ├── src/
+│   │   ├── assets/
+│   │   ├── components/
+│   │   ├── pages/
+│   │   ├── router/
+│   │   ├── api/
+│   │   ├── store/
+│   │   ├── utils/
+│   │   ├── styles/
+│   │   ├── App.jsx
+│   │   └── main.jsx
+│   ├── package.json
+│   ├── vite.config.js
+│   └── README.md
+├── backend/                           # 后端服务
+│   ├── src/                           # 基础版 Node 分层骨架（迁移预留）
+│   │   ├── config/
+│   │   ├── controllers/
+│   │   ├── models/
+│   │   ├── routes/
+│   │   ├── middleware/
+│   │   ├── services/
+│   │   ├── jobs/
+│   │   ├── utils/
+│   │   ├── app.js
+│   │   └── server.js
+│   ├── api_server.py                  # 当前生产后端入口（Python）
+│   ├── dingtalk_random_scheduler.py   # 调度器（Python）
+│   ├── package.json                   # 结构对齐占位
+│   └── README.md
+├── scripts/                           # 运维脚本 / 启动脚本
+│   ├── start-frontend.sh
+│   ├── start-backend.sh
+│   ├── deploy.sh
+│   ├── backup.sh
+│   └── ...
+├── database/
+│   ├── schema.sql
+│   ├── seed.sql
+│   └── migrations/
+├── docs/
+│   ├── api.md
+│   ├── deploy.md
+│   ├── adb-device-setup.md
+│   └── project-structure.md
+├── docker-compose.yml
+├── nginx.conf
+├── README.md
+└── LICENSE
 ```
+
+说明：
+
+- 现网运行链路保持不变（`backend/api_server.py` + `frontend/src/App.jsx`）。
+- `backend/src/**` 是按基础版目录补齐的迁移骨架，不参与当前生产运行。
 
 ## Architecture
 
@@ -64,19 +103,36 @@ Scheduler (dingtalk_random_scheduler.py)
 
 ## Quick Start
 
-### 1) 安装 ADB（可选，项目内置安装脚本）
+### 0) 电脑端先检查 Python3（必须）
+
+```bash
+python3 --version
+```
+
+若不存在请先安装：
+
+- macOS: `brew install python`
+- Ubuntu/Debian: `sudo apt-get update && sudo apt-get install -y python3`
+
+### 1) 手机端先准备（先手机，后电脑）
+
+- 开启开发者模式
+- 开启 USB 调试
+- 连接电脑后在手机端点击“允许 USB 调试”
+
+### 2) 电脑端安装 ADB（可选，项目内置安装脚本）
 
 ```bash
 python3 scripts/install_platform_tools.py
 ```
 
-### 2) 运行环境自检
+### 3) 运行环境自检
 
 ```bash
 python3 backend/dingtalk_random_scheduler.py doctor
 ```
 
-### 3) 启动后端 API
+### 4) 启动后端 API
 
 ```bash
 python3 backend/api_server.py
@@ -84,7 +140,7 @@ python3 backend/api_server.py
 
 默认监听：`http://127.0.0.1:8000`
 
-### 4) 启动前端控制台
+### 5) 启动前端控制台
 
 ```bash
 cd frontend

@@ -1,0 +1,15 @@
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at top, #15274d 0%, #0a0f1e 48%, #05080f 100%);
+  color: var(--color-text);
+}
+
+.layout-container {
+  min-height: 100vh;
+}

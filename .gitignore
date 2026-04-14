@@ -219,4 +219,14 @@ backend/logs/*.log
 backend/logs/*.json
 backend/runtime/console-config.json
 backend/vendor/platform-tools/
+backup/
 *.DS_Store
+
+# Upload safety (private/sensitive and build artifacts)
+**/node_modules/
+**/dist/
+**/build/
+**/uploads/
+.env
+.env.local
+.env.production
