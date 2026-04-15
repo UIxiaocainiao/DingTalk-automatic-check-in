@@ -52,11 +52,5 @@
       "tar.gz"
     ],
     "category": "Utility"
-  },
-  "publish": [
-    {
-      "provider": "github",
-      "releaseType": "release"
-    }
-  ]
+  }
 }
