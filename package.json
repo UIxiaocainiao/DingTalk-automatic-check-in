@@ -1,0 +1,17 @@
+{
+  "name": "dingtalk-hybrid-desktop-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "desktop"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace desktop",
+    "dev:frontend": "npm run dev --workspace frontend",
+    "dev:desktop": "npm run dev --workspace desktop",
+    "build:frontend": "npm run build --workspace frontend",
+    "build:desktop": "npm run dist --workspace desktop",
+    "release:desktop": "npm run release --workspace desktop"
+  }
+}

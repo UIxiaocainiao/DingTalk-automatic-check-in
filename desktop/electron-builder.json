@@ -1,0 +1,62 @@
+{
+  "appId": "cn.pengshz.dingtalk.hybrid.desktop",
+  "productName": "DingTalkHybridDesktop",
+  "asar": false,
+  "directories": {
+    "output": "release",
+    "buildResources": "assets"
+  },
+  "files": [
+    "main/**/*",
+    "preload/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "../frontend/dist",
+      "to": "frontend/dist",
+      "filter": [
+        "**/*"
+      ]
+    },
+    {
+      "from": "../backend",
+      "to": "backend",
+      "filter": [
+        "**/*",
+        "!__pycache__/**",
+        "!*.pyc"
+      ]
+    },
+    {
+      "from": "../scripts/install_platform_tools.py",
+      "to": "scripts/install_platform_tools.py"
+    }
+  ],
+  "mac": {
+    "target": [
+      "dmg",
+      "zip"
+    ],
+    "category": "public.app-category.productivity"
+  },
+  "win": {
+    "target": [
+      "nsis",
+      "zip"
+    ]
+  },
+  "linux": {
+    "target": [
+      "AppImage",
+      "tar.gz"
+    ],
+    "category": "Utility"
+  },
+  "publish": [
+    {
+      "provider": "github",
+      "releaseType": "release"
+    }
+  ]
+}

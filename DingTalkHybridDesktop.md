@@ -1,4 +1,4 @@
-DingTalk-automatic-check-in
+DingTalkHybridDesktop
 Electron 混合版目录结构 + 启动流程方案
 
 一、目标
@@ -16,7 +16,7 @@ Electron 混合版目录结构 + 启动流程方案
 
 三、推荐目录结构
 
-DingTalk-automatic-check-in/
+DingTalkHybridDesktop/
 ├── desktop/                             # Electron 桌面端
 │   ├── main/                            # 主进程代码
 │   │   ├── index.js                     # Electron 主入口

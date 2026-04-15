@@ -1,0 +1,20 @@
+{
+  "name": "dingtalk-hybrid-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Electron desktop shell for DingTalk automatic check-in console",
+  "main": "main/index.js",
+  "scripts": {
+    "dev": "cross-env NODE_ENV=development ELECTRON_RENDERER_URL=http://127.0.0.1:5173 concurrently -k -n renderer,backend,electron -c cyan,magenta,green \"npm --prefix ../frontend run dev\" \"python3 ../backend/api_server.py\" \"wait-on tcp:5173 http://127.0.0.1:8000/api/health && electron .\"",
+    "build:renderer": "cross-env VITE_ELECTRON_BUILD=1 npm --prefix ../frontend run build",
+    "dist": "npm run build:renderer && electron-builder --config electron-builder.json --publish never",
+    "release": "npm run dist -- -p always"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^31.7.7",
+    "electron-builder": "^25.1.8",
+    "wait-on": "^8.0.3"
+  }
+}

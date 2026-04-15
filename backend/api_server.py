@@ -68,6 +68,7 @@ CHECKIN_TYPE_LABELS = {
     "morning": "上午打卡",
     "evening": "下午打卡",
 }
+DEFAULT_STATE_FILE = os.environ.get("DINGTALK_CONSOLE_DEFAULT_STATE_FILE", scheduler.DEFAULT_STATE_FILE)
 API_LOCK = threading.Lock()
 
 
@@ -101,7 +102,6 @@ def default_console_config() -> dict[str, Any]:
         "delay_after_launch": scheduler.DEFAULT_DELAY_AFTER_LAUNCH,
         "poll_interval": scheduler.DEFAULT_POLL_INTERVAL,
         "scrcpy_launch_cooldown": scheduler.DEFAULT_SCRCPY_LAUNCH_COOLDOWN,
-        "state_file": scheduler.DEFAULT_STATE_FILE,
         "workday_api_url": scheduler.DEFAULT_WORKDAY_API_URL,
         "workday_api_timeout_ms": int(scheduler.DEFAULT_WORKDAY_API_TIMEOUT * 1000),
         "enable_scrcpy_watch": False,
@@ -109,6 +109,7 @@ def default_console_config() -> dict[str, Any]:
         "enable_workday_check": True,
         "adb_bin": "",
         "scrcpy_bin": "",
+        "state_file": DEFAULT_STATE_FILE,
         "windows": {
             window.name: {
                 "start": window.start.strftime("%H:%M"),

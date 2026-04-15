@@ -196,6 +196,33 @@ npm run dev
 
 本地开发时，Vite 已将 `/api` 代理到 `http://127.0.0.1:8000`。
 
+### 6) 启动 Desktop（Electron）
+
+```bash
+# 仓库根目录
+npm install --prefix desktop
+npm run dev --prefix desktop
+```
+
+开发模式会同时启动：
+
+- `frontend` Vite（`http://127.0.0.1:5173`）
+- `backend/api_server.py`（`http://127.0.0.1:8000`）
+- Electron 主进程
+
+### 7) 打包 Desktop 安装包
+
+```bash
+npm run dist --prefix desktop
+```
+
+产物目录：`desktop/release/`
+
+### 8) GitHub Actions 自动发布
+
+- 推送标签 `v*`（例如 `v1.0.0`）后，工作流会自动构建并发布桌面安装包。
+- 工作流文件：`.github/workflows/release-desktop.yml`
+
 ## Scheduler CLI Usage
 
 ### 常用命令
