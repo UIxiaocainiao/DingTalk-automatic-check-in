@@ -137,6 +137,27 @@ curl -sS https://github.com/<owner>/<repo>/releases/expanded_assets/vX.Y.Z | \
    - `release-assets/macos/*.dmg`
    - `release-assets/windows/*.exe`
 
+### 4) macOS 安装后提示“已损坏，无法打开”
+
+现象：
+- 双击 `DingTalkHybridDesktop.app` 提示已损坏，建议移到废纸篓。
+
+原因：
+- 常见于未做 Apple Notarization 的包被 Gatekeeper 拦截，不一定是文件损坏。
+
+临时修复（用户侧）：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/DingTalkHybridDesktop.app
+xattr -dr com.apple.provenance /Applications/DingTalkHybridDesktop.app || true
+codesign --force --deep --sign - /Applications/DingTalkHybridDesktop.app
+open -a /Applications/DingTalkHybridDesktop.app
+```
+
+根治方案（发布侧）：
+- 在 CI 接入 Developer ID 签名 + Notarization（`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID`、`CSC_LINK`、`CSC_KEY_PASSWORD` 等密钥）。
+- 产物经公证后，终端用户无需手动执行 `xattr/codesign`。
+
 ## 输出回报模板（执行后）
 
 - 发布标签：`vX.Y.Z`

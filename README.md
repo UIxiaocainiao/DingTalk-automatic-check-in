@@ -115,6 +115,32 @@ git push origin v1.0.2
 
 发布完成后，到 GitHub Actions 查看 `Release Desktop Installers`，安装包会自动上传到对应 Release。
 
+## macOS 首次安装与权限授权
+
+当你从 Release 下载并安装 `DingTalkHybridDesktop.app` 后，如果出现：
+
+`“DingTalkHybridDesktop”已损坏，无法打开。你应该将它移到废纸篓。`
+
+通常是 macOS Gatekeeper 对未公证应用的拦截，不是应用文件真的损坏。可执行以下修复：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/DingTalkHybridDesktop.app
+xattr -dr com.apple.provenance /Applications/DingTalkHybridDesktop.app || true
+codesign --force --deep --sign - /Applications/DingTalkHybridDesktop.app
+open -a /Applications/DingTalkHybridDesktop.app
+```
+
+首次启动后，请按系统弹窗授权；若未自动弹窗，可手动到：
+
+- 系统设置 → 隐私与安全性 → 辅助功能
+- 系统设置 → 隐私与安全性 → 自动化
+- 系统设置 → 通知（可选，用于成功/失败通知）
+
+说明：
+
+- 当前 Release 默认未做 Apple Developer ID 签名与 Notarization，因此首次安装可能需要上述处理。
+- 若要彻底消除此提示，需在发布流程中接入 Developer ID 签名和 Apple Notarization。
+
 ## Scheduler CLI 常用命令
 
 ```bash
