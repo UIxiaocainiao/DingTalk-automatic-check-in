@@ -1,18 +1,29 @@
 # ADB 设备准备
 
-## 标准顺序（先电脑，再手机，再回电脑）
+## 标准顺序（先确认设备接入方式，再服务端，再手机，再回控制台）
 
-1. 电脑端先确认已安装 `python3`。
-2. 手机端开启开发者模式和 USB 调试，并完成授权弹窗。
-3. 回到电脑端安装 ADB 并做连通性自检。
+1. 先确认运行 ADB 的那台机器能实际访问手机。
+2. 云服务器先确认后端服务已经部署。
+3. 手机端开启开发者模式和 USB 调试，并完成授权弹窗。
+4. 回到网页控制台执行在线安装 ADB，并做连通性自检。
 
-## 1) 电脑端：先检查 Python3
+## 0) 先确认一个前提
+
+在线安装 ADB 只会把 `adb` 装到运行后端的那台机器上，不会自动把你本地电脑上的 USB 手机“转发”到云服务器。
+
+也就是说：
+
+1. 如果后端跑在你的本机，手机插在本机 USB 上，这是最直接的方式。
+2. 如果后端跑在云服务器，手机也必须接在云服务器可访问的设备连接器环境中，或者你已经自行打通远程 ADB/TCP。
+3. 如果后端跑在 Railway 这类托管容器，而手机插在你自己的电脑上，通常无法直接连通。
+
+## 1) 服务端：先检查 Python3
 
 ```bash
 python3 --version
 ```
 
-如果提示 `command not found`：
+如果云服务器提示 `command not found`：
 
 - macOS：`brew install python`
 - Ubuntu/Debian：`sudo apt-get update && sudo apt-get install -y python3`
@@ -23,14 +34,56 @@ python3 --version
 2. 打开「USB 调试」。
 3. 连接电脑后，在手机弹窗里点「允许 USB 调试」（建议勾选“总是允许”）。
 
-## 3) 电脑端：执行安装与自检
+## 2.1) 如果你要走远程 ADB/TCP
+
+### 方案 A：Android 11+ 无线调试
+
+适用场景：手机系统自带“无线调试”入口。
+
+1. 让手机和运行 ADB 的那台机器处于可互通的同一局域网。
+2. 在手机「开发者选项」里打开「无线调试」。
+3. 进入「无线调试」页面，选择配对或查看当前连接地址。
+4. 记录手机展示的调试地址和端口，整理成 `host:port`。
+5. 回到控制台，把这个值填进 `remote_adb_target`。
+6. 可选填写 `remote_adb_target_name`，例如“办公室测试机”。
+7. 点击“连接远程 ADB”，再刷新设备状态。
+
+说明：
+
+- 不同 ROM 的无线调试界面文案可能不同，但核心都是拿到一个 `host:port` 地址。
+- 如果无线调试地址变化，需要同步更新 `remote_adb_target`。
+
+### 方案 B：传统 `adb tcpip 5555`
+
+适用场景：先用 USB 完成一次授权，再切到 TCP 模式。
+
+1. 先把手机通过 USB 接到一台已经安装 ADB 的电脑上。
+2. 在这台电脑上确认 `adb devices` 能看到手机并且状态为 `device`。
+3. 执行：
 
 ```bash
-python3 scripts/install_platform_tools.py
-python3 backend/dingtalk_random_scheduler.py doctor
+adb tcpip 5555
 ```
 
-如果 `doctor` 输出里设备状态为 `device`，说明连接成功。
+4. 查出手机在局域网里的 IP 地址。
+5. 在控制台把 `remote_adb_target` 填成 `手机IP:5555`，例如 `192.168.1.8:5555`。
+6. 可选填写 `remote_adb_target_name`，例如“备用 Redmi”。
+7. 点击“连接远程 ADB”，再刷新设备状态。
+
+说明：
+
+- 手机和运行 ADB 的机器必须网络可达。
+- 手机换网络、换 IP 或重启后，可能需要重新设置或重新连接。
+
+## 3) 控制台：执行安装与自检
+
+1. 在网页端点击“在线安装 ADB”。
+2. 如果你走远程 ADB/TCP，在“任务配置”里填写 `remote_adb_target`，例如 `192.168.1.8:5555`。
+3. 可选填写 `remote_adb_target_name`，方便在最近目标列表里区分不同设备。
+4. 点击“连接远程 ADB”。
+5. 再点击“刷新设备状态”或执行“一键自检”。
+
+如果自检结果里设备状态为 `device`，说明连接成功。
 
 ## 4) 启动服务
 
@@ -41,6 +94,8 @@ cd frontend && npm install && npm run dev
 
 ## 常见问题
 
-1. `python3` 不存在：先安装 Python3，再继续后续步骤。
+1. 服务端无法安装 ADB：检查云服务器网络连通性，以及后端进程是否有写入运行时 platform-tools 目录的权限。
 2. `adb devices` 显示 `unauthorized`：看手机端是否点击了授权。
 3. 连接后没有设备：换数据线/USB 口，确认不是仅充电线。
+4. 云服务器安装成功但还是 `deviceCount: 0`：先排查手机是否根本不在这台服务器可访问的 ADB 环境里。
+5. 远程 ADB 连接失败：确认 `remote_adb_target` 填的是 `host:port`，目标网络可达，且手机端已开启对应无线调试/ADB TCP。

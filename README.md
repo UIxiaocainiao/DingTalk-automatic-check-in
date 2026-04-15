@@ -97,6 +97,9 @@ Scheduler (dingtalk_random_scheduler.py)
 - Python `3.11+`
 - Node.js `20+`（推荐）
 - Android 设备已开启 USB 调试并完成授权
+- 运行 ADB 的机器必须能实际访问该手机：
+  - 最常见是手机通过 USB 连接到这台机器
+  - 或者已经配置好远程 ADB/TCP 连接
 - macOS/Linux/Windows（ADB 可用即可）
 
 > 后端依赖 Python 标准库；前端依赖通过 `npm install` 安装。
@@ -121,36 +124,59 @@ bash scripts/pull_repo.sh \
   --target-dir .
 ```
 
-### 0) 电脑端先检查 Python3（必须）
+### 0) 云服务器先准备 Python3（部署时完成）
 
 ```bash
 python3 --version
 ```
 
-若不存在请先安装：
+若云服务器不存在请先安装：
 
 - macOS: `brew install python`
 - Ubuntu/Debian: `sudo apt-get update && sudo apt-get install -y python3`
 
-### 1) 手机端先准备（先手机，后电脑）
+### 1) 手机端先准备
 
 - 开启开发者模式
 - 开启 USB 调试
 - 连接电脑后在手机端点击“允许 USB 调试”
 
-### 2) 电脑端安装 ADB（可选，项目内置安装脚本）
+### 2) 在网页端安装 ADB
 
-```bash
-python3 scripts/install_platform_tools.py
-```
+- 登录控制台后点击“在线安装 ADB”。
+- 安装动作会在当前云服务器执行，不需要本地终端手动运行脚本。
+- 这一步只解决“服务器有没有 ADB”，不解决“服务器能不能看到你的手机”。
+- 如果手机实际上插在你本地电脑上，而后端跑在 Railway/云服务器，那么仅安装 ADB 仍然无法发现设备。
 
-### 3) 运行环境自检
+### 3) 在网页端执行自检
 
-```bash
-python3 backend/dingtalk_random_scheduler.py doctor
-```
+- 安装完成后点击“一键自检”。
+- 设备状态显示为 `device` 时，再继续试运行或正式启动。
 
-### 4) 启动后端 API
+### 4) 设备接入约束
+
+- 如果后端运行在云服务器，手机也必须接在这台云服务器可访问的设备连接器环境上。
+- Railway 这类托管容器通常不能直接访问你本地电脑上的 USB 手机。
+- 如果你要保留云端控制台，常见可行方案只有两类：
+  - 后端和手机放在同一台可直连 USB 的机器上
+  - 先自行打通远程 ADB/TCP，再把该地址交给运行中的 ADB 环境
+
+远程 ADB/TCP 的最小接入顺序：
+
+1. 在控制台保存 `remote_adb_target=host:port`
+2. 可选填写 `remote_adb_target_name=设备别名`
+3. 点击“连接远程 ADB”
+4. 点击“刷新设备状态”
+5. 确认 dashboard 中设备状态进入 `device`
+
+常见两种远程接入方式：
+
+1. Android 11+ 无线调试：直接在手机开发者选项里拿到无线调试地址，再填入 `remote_adb_target`
+2. 传统 `adb tcpip 5555`：先 USB 授权，再把手机切到 TCP 模式，最后填 `手机IP:5555`
+
+更详细步骤见 [docs/adb-device-setup.md](/Users/pengshz/DingTalk-automatic-check-in/docs/adb-device-setup.md)。
+
+### 5) 启动后端 API
 
 ```bash
 python3 backend/api_server.py
@@ -270,6 +296,9 @@ python3 backend/dingtalk_random_scheduler.py set-next --window evening --time 18
 - `DINGTALK_ADB_BIN`
 - `DINGTALK_SCRCPY_BIN`
 
+`DINGTALK_PLATFORM_TOOLS_DIR` 用于控制 ADB/platform-tools 的安装与查找目录。
+在 Railway 上，如果服务挂载了 Volume，运行时会自动提供 `RAILWAY_VOLUME_MOUNT_PATH`；当前项目会优先把 platform-tools 安装到该挂载目录下的 `platform-tools/`，这样重部署后不会丢失。
+
 ### Frontend
 
 - `VITE_API_BASE_URL`（生产环境推荐显式配置）
@@ -297,6 +326,14 @@ python3 api_server.py --host 0.0.0.0 --port ${PORT:-8000}
 ```
 
 健康检查：`/api/health`
+
+如果部署在 Railway，建议：
+
+- 给后端服务挂载一个 Volume。
+- 挂载路径优先使用 `/app/backend/runtime`。
+- 若使用其他挂载路径，显式设置 `DINGTALK_PLATFORM_TOOLS_DIR=<你的挂载路径>/platform-tools`。
+
+这样网页端“在线安装 ADB”下载的 platform-tools 才能在重部署后保留。
 
 ### Frontend Build
 
@@ -332,7 +369,7 @@ bash scripts/verify_public_deploy.sh <frontend_domain> <api_domain>
 
 ## Troubleshooting
 
-- `adb not found`：执行 `python3 scripts/install_platform_tools.py`，或在控制台配置 `adb_bin`。
+- `adb not found`：在控制台点击“在线安装 ADB”，或在前台配置 `adb_bin`。
 - `unauthorized`：手机上确认 USB 调试授权，必要时重插 USB。
 - 多设备冲突：在配置中显式填写 `serial`。
 - 非工作日不执行：检查 `enable_workday_check` 与工作日接口返回。

@@ -29,6 +29,34 @@ export function runDoctor() {
   });
 }
 
+export function installAdb() {
+  return request("/api/actions/adb-install", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function connectRemoteAdb() {
+  return request("/api/actions/adb-connect", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function disconnectRemoteAdb() {
+  return request("/api/actions/adb-disconnect", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function deleteRemoteAdbTarget(target) {
+  return request("/api/actions/remote-adb-targets/delete", {
+    method: "POST",
+    body: JSON.stringify({ target }),
+  });
+}
+
 export function restartAdb() {
   return request("/api/actions/adb-restart", {
     method: "POST",

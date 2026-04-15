@@ -28,6 +28,7 @@ except ModuleNotFoundError:  # pragma: no cover - import path depends on entrypo
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
 SCRIPT_PATH = BASE_DIR / "dingtalk_random_scheduler.py"
+INSTALL_PLATFORM_TOOLS_SCRIPT = PROJECT_DIR / "scripts/install_platform_tools.py"
 CONFIG_FILE = Path(os.environ.get("DINGTALK_CONSOLE_CONFIG_FILE", scheduler.DEFAULT_CONFIG_FILE))
 PROCESS_FILE = Path(
     os.environ.get(
@@ -53,6 +54,12 @@ CHECKIN_RECORDS_FILE = Path(
         str(BASE_DIR / "logs/dingtalk-checkin-records.json"),
     )
 )
+REMOTE_ADB_STATUS_FILE = Path(
+    os.environ.get(
+        "DINGTALK_REMOTE_ADB_STATUS_FILE",
+        str(BASE_DIR / "runtime/remote-adb-status.json"),
+    )
+)
 WINDOW_LABELS = {
     "morning": "上午窗口",
     "evening": "下午窗口",
@@ -71,9 +78,24 @@ class ApiError(RuntimeError):
         self.message = message
 
 
+def format_beijing_datetime_label(value: datetime | None) -> str:
+    if not value:
+        return ""
+    return f"{scheduler.format_timestamp(value)} 北京时间"
+
+
+def format_beijing_date_label(value: date | None) -> str:
+    if not value:
+        return ""
+    return f"{value.isoformat()} 北京时间"
+
+
 def default_console_config() -> dict[str, Any]:
     return {
         "serial": "",
+        "remote_adb_target": "",
+        "remote_adb_target_name": "",
+        "recent_remote_adb_targets": [],
         "package": scheduler.DEFAULT_PACKAGE,
         "app_label": scheduler.DEFAULT_APP_LABEL,
         "delay_after_launch": scheduler.DEFAULT_DELAY_AFTER_LAUNCH,
@@ -97,6 +119,26 @@ def default_console_config() -> dict[str, Any]:
     }
 
 
+def normalize_recent_remote_adb_targets(raw_value: Any) -> list[dict[str, str]]:
+    if not isinstance(raw_value, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    seen_targets: set[str] = set()
+    for item in raw_value:
+        if isinstance(item, dict):
+            target = str(item.get("target") or "").strip()
+            name = str(item.get("name") or "").strip()
+        else:
+            target = str(item or "").strip()
+            name = ""
+        if not target or target in seen_targets:
+            continue
+        normalized.append({"name": name, "target": target})
+        seen_targets.add(target)
+    return normalized[:8]
+
+
 def normalize_console_config(payload: Any) -> dict[str, Any]:
     defaults = default_console_config()
     if not isinstance(payload, dict):
@@ -104,9 +146,22 @@ def normalize_console_config(payload: Any) -> dict[str, Any]:
 
     normalized = default_console_config()
 
-    for key in ("serial", "package", "app_label", "state_file", "workday_api_url", "adb_bin", "scrcpy_bin"):
+    for key in (
+        "serial",
+        "remote_adb_target",
+        "remote_adb_target_name",
+        "package",
+        "app_label",
+        "state_file",
+        "workday_api_url",
+        "adb_bin",
+        "scrcpy_bin",
+    ):
         if key in payload and payload[key] is not None:
             normalized[key] = str(payload[key]).strip()
+
+    raw_recent_targets = payload.get("recent_remote_adb_targets")
+    normalized["recent_remote_adb_targets"] = normalize_recent_remote_adb_targets(raw_recent_targets)
 
     for key, minimum in (
         ("delay_after_launch", 1),
@@ -159,6 +214,45 @@ def load_console_config() -> dict[str, Any]:
         return default_console_config()
 
 
+def remember_remote_adb_target(target: str, name: str = "") -> None:
+    normalized_target = str(target or "").strip()
+    normalized_name = str(name or "").strip()
+    if not normalized_target:
+        return
+    config = load_console_config()
+    recent_targets = [
+        item
+        for item in config.get("recent_remote_adb_targets", [])
+        if str(item.get("target") or "").strip() != normalized_target
+    ]
+    config["remote_adb_target"] = normalized_target
+    if normalized_name:
+        config["remote_adb_target_name"] = normalized_name
+    config["recent_remote_adb_targets"] = [{"name": normalized_name, "target": normalized_target}, *recent_targets][:8]
+    save_console_config(config)
+
+
+def delete_remote_adb_target(target: str) -> dict[str, Any]:
+    normalized_target = str(target or "").strip()
+    if not normalized_target:
+        raise ApiError(400, "target 不能为空。")
+
+    config = load_console_config()
+    existing_targets = list(config.get("recent_remote_adb_targets", []))
+    config["recent_remote_adb_targets"] = [
+        item for item in existing_targets if str(item.get("target") or "").strip() != normalized_target
+    ]
+    if config.get("remote_adb_target") == normalized_target:
+        config["remote_adb_target"] = ""
+        config["remote_adb_target_name"] = ""
+    save_console_config(config)
+
+    return {
+        "message": "远程目标已删除",
+        "detail": f"{normalized_target} 已从最近使用列表移除。",
+    }
+
+
 def save_console_config(config: dict[str, Any]) -> None:
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(
@@ -179,6 +273,7 @@ def build_namespace(config: dict[str, Any], command: str = "status", **overrides
         window=None,
         time=None,
         serial=config["serial"] or None,
+        remote_adb_target=config["remote_adb_target"] or None,
         package=config["package"],
         app_label=config["app_label"],
         delay_after_launch=int(config["delay_after_launch"]),
@@ -223,6 +318,51 @@ def read_process_record() -> dict[str, Any]:
         PROCESS_FILE.unlink(missing_ok=True)
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def read_remote_adb_status() -> dict[str, Any]:
+    if not REMOTE_ADB_STATUS_FILE.exists():
+        return {}
+    try:
+        payload = json.loads(REMOTE_ADB_STATUS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        REMOTE_ADB_STATUS_FILE.unlink(missing_ok=True)
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_remote_adb_status(payload: dict[str, Any]) -> None:
+    REMOTE_ADB_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    REMOTE_ADB_STATUS_FILE.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def record_remote_adb_status(target: str, action: str, ok: bool, detail: str) -> None:
+    now = scheduler.now_beijing()
+    save_remote_adb_status(
+        {
+            "target": target,
+            "action": action,
+            "ok": bool(ok),
+            "detail": detail,
+            "checkedAt": now.isoformat(),
+            "checkedAtLabel": format_beijing_datetime_label(now),
+        }
+    )
+
+
+def serialize_remote_adb_status() -> dict[str, Any]:
+    status = read_remote_adb_status()
+    return {
+        "target": str(status.get("target") or ""),
+        "action": str(status.get("action") or ""),
+        "ok": bool(status.get("ok")) if "ok" in status else None,
+        "detail": str(status.get("detail") or ""),
+        "checkedAt": str(status.get("checkedAt") or ""),
+        "checkedAtLabel": str(status.get("checkedAtLabel") or ""),
+    }
 
 
 def save_process_record(payload: dict[str, Any]) -> None:
@@ -333,6 +473,7 @@ def get_scheduler_process_state() -> dict[str, Any]:
             "pid": pid,
             "mode": mode,
             "startedAt": started_at,
+            "startedAtLabel": format_beijing_datetime_label(datetime.fromisoformat(started_at)) if started_at else "",
             "label": "调试中" if mode == "debug" else "运行中",
             "detail": f"受控进程 PID {pid}，模式 {mode}。",
         }
@@ -343,6 +484,7 @@ def get_scheduler_process_state() -> dict[str, Any]:
         "pid": None,
         "mode": None,
         "startedAt": "",
+        "startedAtLabel": "",
         "label": "未启动",
         "detail": "当前没有受控制台托管的调度进程。",
     }
@@ -353,19 +495,23 @@ def serialize_workday_result(result: scheduler.WorkdayCheckResult | None, error:
         return {
             "enabled": False,
             "checkedDate": "",
+            "checkedDateLabel": "",
             "isWorkday": None,
             "note": "",
             "source": "",
             "checkedAt": "",
+            "checkedAtLabel": "",
             "error": error or "",
         }
     return {
         "enabled": True,
         "checkedDate": result.checked_date.isoformat(),
+        "checkedDateLabel": format_beijing_date_label(result.checked_date),
         "isWorkday": result.is_workday,
         "note": result.note,
         "source": result.source,
         "checkedAt": result.checked_at.isoformat(),
+        "checkedAtLabel": format_beijing_datetime_label(result.checked_at),
         "error": error or "",
     }
 
@@ -417,8 +563,8 @@ def resolve_device_snapshot(config: dict[str, Any]) -> dict[str, Any]:
             error = summarize_adb_connection_error(str(exc))
     else:
         error = (
-            "设备连接器缺少 adb：请运行 python3 scripts/install_platform_tools.py，"
-            "或在前台配置 adb_bin 为 platform-tools/adb 的绝对路径。"
+            "设备连接器缺少 adb：请在网页端点击“在线安装 ADB”，安装会在当前云服务器执行；"
+            "也可以在前台配置 adb_bin 为 platform-tools/adb 的绝对路径。"
         )
 
     if adb_bin and not error:
@@ -464,9 +610,16 @@ def resolve_device_snapshot(config: dict[str, Any]) -> dict[str, Any]:
         {"serial": item.serial, "state": item.state, "usbConnected": item.usb_connected}
         for item in statuses[:5]
     ]
+    remote_target = config["remote_adb_target"] or ""
+    remote_connected = bool(
+        remote_target and any(item.serial == remote_target and item.state == "device" for item in statuses)
+    )
 
     return {
         "serial": selected_serial,
+        "remoteAdbTarget": remote_target,
+        "remoteAdbTargetName": config.get("remote_adb_target_name", ""),
+        "remoteAdbConnected": remote_connected,
         "summary": scheduler.status_summary(status) if status else "unavailable",
         "ready": scheduler.is_device_ready(status),
         "authorized": bool(status and status.state == "device"),
@@ -477,7 +630,7 @@ def resolve_device_snapshot(config: dict[str, Any]) -> dict[str, Any]:
         "adbAvailable": bool(adb_bin),
         "adbBin": adb_bin or "",
         "adbSource": scheduler.describe_binary_source(adb_bin, config["adb_bin"] or None),
-        "adbInstallHint": "python3 scripts/install_platform_tools.py",
+        "adbInstallHint": "在网页端点击“在线安装 ADB”",
         "deviceCount": device_count,
         "onlineCount": online_count,
         "unauthorizedCount": unauthorized_count,
@@ -496,7 +649,7 @@ def summarize_adb_connection_error(message: str) -> str:
 
     if "not found" in lowered or "not executable" in lowered:
         return (
-            "ADB 未安装或路径不可执行：请运行 python3 scripts/install_platform_tools.py，"
+            "ADB 未安装或路径不可执行：请在网页端点击“在线安装 ADB”，"
             "或在前台配置 adb_bin。"
         )
     if "could not install *smartsocket* listener" in lowered or "cannot connect to daemon" in lowered:
@@ -522,6 +675,26 @@ def summarize_scrcpy_connection_error(message: str) -> str:
     return normalized[:500] if normalized else "scrcpy 不可用"
 
 
+def summarize_remote_adb_error(message: str, target: str) -> str:
+    normalized = " ".join(message.strip().split())
+    lowered = normalized.lower()
+    if not normalized:
+        return "远程 ADB 连接失败。"
+    if "target is empty" in lowered:
+        return "远程 ADB 目标为空：请先保存 remote_adb_target，例如 192.168.1.8:5555。"
+    if "connection refused" in lowered or "actively refused" in lowered:
+        return f"远程 ADB 被拒绝：{target} 端口未监听或目标未开启无线调试/ADB TCP。"
+    if "timed out" in lowered or "timeout" in lowered:
+        return f"远程 ADB 超时：无法在时限内连到 {target}，请检查网络与端口。"
+    if "no route to host" in lowered or "network is unreachable" in lowered:
+        return f"远程 ADB 不可达：当前服务器无法访问 {target}。"
+    if "unknown host" in lowered or "name or service not known" in lowered:
+        return f"远程 ADB 目标无效：无法解析 {target}。"
+    if "unable to connect" in lowered or "failed to connect" in lowered:
+        return f"远程 ADB 连接失败：请检查 {target} 是否可达，且目标设备已开启无线调试/ADB TCP。"
+    return normalized[:500]
+
+
 def derive_last_success(state: scheduler.SchedulerState) -> dict[str, str]:
     latest_window = ""
     latest_date: date | None = None
@@ -532,13 +705,14 @@ def derive_last_success(state: scheduler.SchedulerState) -> dict[str, str]:
             latest_window = window.name
 
     if not latest_date:
-        return {"window": "", "date": "", "label": "暂无执行记录"}
+        return {"window": "", "date": "", "dateLabel": "", "label": "暂无执行记录"}
 
     window_label = WINDOW_LABELS.get(latest_window, latest_window)
     return {
         "window": latest_window,
         "date": latest_date.isoformat(),
-        "label": f"{latest_date.isoformat()} {window_label}",
+        "dateLabel": format_beijing_date_label(latest_date),
+        "label": f"{latest_date.isoformat()} {window_label} 北京时间",
     }
 
 
@@ -556,7 +730,9 @@ def build_window_items(config: dict[str, Any], state: scheduler.SchedulerState) 
                 "end": raw_window["end"],
                 "selected": next_run.strftime("%H:%M:%S") if next_run else "--:--:--",
                 "selectedAt": scheduler.format_timestamp(next_run) if next_run else "未排期",
+                "selectedAtLabel": format_beijing_datetime_label(next_run) if next_run else "未排期",
                 "completed": last_completed.isoformat() if last_completed else "未执行",
+                "completedLabel": format_beijing_date_label(last_completed) if last_completed else "未执行",
             }
         )
     return items
@@ -632,6 +808,7 @@ def read_recent_logs(limit: int = 8) -> list[dict[str, str]]:
         logs.append(
             {
                 "time": timestamp.strftime("%m-%d %H:%M") if timestamp else ("错误日志" if source == "error" else "运行日志"),
+                "timeLabel": f"{timestamp.strftime('%m-%d %H:%M')} 北京时间" if timestamp else ("错误日志" if source == "error" else "运行日志"),
                 "title": summarize_log_title(message, source),
                 "detail": message,
                 "status": classify_log_status(message, source),
@@ -644,6 +821,7 @@ def read_recent_logs(limit: int = 8) -> list[dict[str, str]]:
     return [
         {
             "time": "暂无",
+            "timeLabel": "暂无",
             "title": "还没有后端日志",
             "detail": "启动调度器、自检或试运行后，这里会展示真实的后端日志。",
             "status": "信息",
@@ -654,13 +832,13 @@ def read_recent_logs(limit: int = 8) -> list[dict[str, str]]:
 def build_timeline(logs: list[dict[str, str]], windows: list[dict[str, str]], workday: dict[str, Any]) -> list[str]:
     items: list[str] = []
     for entry in reversed(logs[:4]):
-        items.append(f"{entry['time']} {entry['title']}")
+        items.append(f"{entry.get('timeLabel') or entry['time']} {entry['title']}")
 
     if workday.get("enabled") and workday.get("checkedDate") and workday.get("note"):
-        items.append(f"{workday['checkedDate']} 工作日校验 {workday['note']}")
+        items.append(f"{workday['checkedDateLabel'] or workday['checkedDate']} 工作日校验 {workday['note']}")
 
     for window in windows:
-        items.append(f"{window['title']} 下一次计划 {window['selectedAt']}")
+        items.append(f"{window['title']} 下一次计划 {window['selectedAtLabel']}")
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -682,6 +860,8 @@ def build_status_tags(
         tags.append(f"设备 {device['serial']}")
     elif device.get("deviceCount", 0) > 1:
         tags.append("多设备未绑定")
+    if device.get("remoteAdbTarget"):
+        tags.append("远程 ADB 已连接" if device.get("remoteAdbConnected") else "远程 ADB 未连接")
     if not device.get("adbAvailable"):
         tags.append("ADB 未安装")
     else:
@@ -752,12 +932,15 @@ def build_dashboard() -> dict[str, Any]:
     windows = build_window_items(config, state)
     logs = read_recent_logs()
     workday = serialize_workday_result(workday_result, workday_error)
+    remote_adb = serialize_remote_adb_status()
 
     return {
         "generatedAt": scheduler.now_beijing().isoformat(),
+        "generatedAtLabel": format_beijing_datetime_label(scheduler.now_beijing()),
         "config": config,
         "scheduler": process_state,
         "device": device,
+        "remoteAdb": remote_adb,
         "workday": workday,
         "windows": windows,
         "lastSuccess": derive_last_success(state),
@@ -950,6 +1133,88 @@ def restart_adb() -> dict[str, Any]:
     }
 
 
+def connect_remote_adb() -> dict[str, Any]:
+    config = load_console_config()
+    args = build_namespace(config, command="status")
+    target = str(config.get("remote_adb_target") or "").strip()
+    target_name = str(config.get("remote_adb_target_name") or "").strip()
+    if not target:
+        raise ApiError(400, "请先在前台配置 remote_adb_target，例如 192.168.1.8:5555。")
+
+    try:
+        adb_bin = scheduler.resolve_binary("adb", args.adb_bin, scheduler.ADB_CANDIDATES)
+    except Exception as exc:
+        raise ApiError(400, f"ADB 不可用：{exc}") from exc
+
+    try:
+        output = scheduler.adb_connect(adb_bin, target)
+    except Exception as exc:
+        detail = summarize_remote_adb_error(str(exc), target)
+        remember_remote_adb_target(target, target_name)
+        record_remote_adb_status(target, "connect", False, detail)
+        raise ApiError(500, detail) from exc
+
+    remember_remote_adb_target(target, target_name)
+    record_remote_adb_status(target, "connect", True, output)
+
+    return {
+        "message": "远程 ADB 已连接",
+        "detail": output,
+    }
+
+
+def disconnect_remote_adb() -> dict[str, Any]:
+    config = load_console_config()
+    args = build_namespace(config, command="status")
+    target = str(config.get("remote_adb_target") or "").strip()
+    target_name = str(config.get("remote_adb_target_name") or "").strip()
+    if not target:
+        raise ApiError(400, "请先在前台配置 remote_adb_target，例如 192.168.1.8:5555。")
+
+    try:
+        adb_bin = scheduler.resolve_binary("adb", args.adb_bin, scheduler.ADB_CANDIDATES)
+    except Exception as exc:
+        raise ApiError(400, f"ADB 不可用：{exc}") from exc
+
+    try:
+        output = scheduler.adb_disconnect(adb_bin, target)
+    except Exception as exc:
+        detail = summarize_remote_adb_error(str(exc), target)
+        remember_remote_adb_target(target, target_name)
+        record_remote_adb_status(target, "disconnect", False, detail)
+        raise ApiError(500, detail) from exc
+
+    remember_remote_adb_target(target, target_name)
+    record_remote_adb_status(target, "disconnect", True, output)
+
+    return {
+        "message": "远程 ADB 已断开",
+        "detail": output,
+    }
+
+
+def install_adb() -> dict[str, Any]:
+    if not INSTALL_PLATFORM_TOOLS_SCRIPT.exists():
+        raise ApiError(500, f"安装脚本不存在：{INSTALL_PLATFORM_TOOLS_SCRIPT}")
+
+    result = subprocess.run(
+        [sys.executable, str(INSTALL_PLATFORM_TOOLS_SCRIPT)],
+        cwd=str(PROJECT_DIR),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=180,
+    )
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip()).strip()
+    if result.returncode != 0:
+        raise ApiError(500, output or "在线安装 ADB 失败。")
+
+    return {
+        "message": "ADB 已安装到云服务器",
+        "detail": output or "platform-tools 已安装完成。",
+    }
+
+
 def reroll_schedule() -> dict[str, Any]:
     config = load_console_config()
     apply_console_windows(config)
@@ -1082,6 +1347,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                     result = run_cli_command("doctor")
                     if not result["ok"]:
                         raise ApiError(500, result["output"])
+                elif path == "/api/actions/adb-install":
+                    result = install_adb()
+                elif path == "/api/actions/adb-connect":
+                    result = connect_remote_adb()
+                elif path == "/api/actions/adb-disconnect":
+                    result = disconnect_remote_adb()
+                elif path == "/api/actions/remote-adb-targets/delete":
+                    result = delete_remote_adb_target(str(payload.get("target") or ""))
                 elif path == "/api/actions/adb-restart":
                     result = restart_adb()
                 elif path == "/api/actions/run-once":

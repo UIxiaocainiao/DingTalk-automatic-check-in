@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install Android platform-tools into the backend vendor directory."""
+"""Install Android platform-tools into the runtime platform-tools directory."""
 
 from __future__ import annotations
 
@@ -16,7 +16,13 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_INSTALL_ROOT = PROJECT_DIR / "backend/vendor/platform-tools"
+DEFAULT_INSTALL_ROOT = (
+    Path(os.environ["DINGTALK_PLATFORM_TOOLS_DIR"])
+    if os.environ.get("DINGTALK_PLATFORM_TOOLS_DIR")
+    else Path(os.environ["RAILWAY_VOLUME_MOUNT_PATH"]) / "platform-tools"
+    if os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+    else PROJECT_DIR / "backend/runtime/platform-tools"
+)
 DOWNLOAD_URLS = {
     "darwin": "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip",
     "linux": "https://dl.google.com/android/repository/platform-tools-latest-linux.zip",

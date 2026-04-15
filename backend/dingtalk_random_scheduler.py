@@ -42,10 +42,15 @@ DEFAULT_DELAY_AFTER_LAUNCH = 5
 DEFAULT_POLL_INTERVAL = 5
 DEFAULT_SCRCPY_LAUNCH_COOLDOWN = 15
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_PLATFORM_TOOLS_DIR = BASE_DIR / "vendor/platform-tools"
-PLATFORM_TOOLS_DIR = Path(
-    os.environ.get("DINGTALK_PLATFORM_TOOLS_DIR", str(DEFAULT_PLATFORM_TOOLS_DIR))
-).expanduser()
+LEGACY_PLATFORM_TOOLS_DIR = BASE_DIR / "vendor/platform-tools"
+DEFAULT_PLATFORM_TOOLS_DIR = (
+    Path(os.environ["DINGTALK_PLATFORM_TOOLS_DIR"])
+    if os.environ.get("DINGTALK_PLATFORM_TOOLS_DIR")
+    else Path(os.environ["RAILWAY_VOLUME_MOUNT_PATH"]) / "platform-tools"
+    if os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+    else BASE_DIR / "runtime/platform-tools"
+)
+PLATFORM_TOOLS_DIR = Path(DEFAULT_PLATFORM_TOOLS_DIR).expanduser()
 DEFAULT_STATE_FILE = str(BASE_DIR / "logs/dingtalk-random-scheduler.state.json")
 DEFAULT_CONFIG_FILE = str(BASE_DIR / "runtime/console-config.json")
 DEFAULT_CHECKIN_RECORDS_FILE = str(BASE_DIR / "logs/dingtalk-checkin-records.json")
@@ -88,12 +93,17 @@ def host_platform_key() -> str:
 def bundled_binary_candidates(binary_name: str) -> tuple[str, ...]:
     executable_name = f"{binary_name}.exe" if os.name == "nt" else binary_name
     platform_key = host_platform_key()
-    return (
-        str(PLATFORM_TOOLS_DIR / platform_key / "platform-tools" / executable_name),
-        str(PLATFORM_TOOLS_DIR / platform_key / executable_name),
-        str(PLATFORM_TOOLS_DIR / "platform-tools" / executable_name),
-        str(PLATFORM_TOOLS_DIR / executable_name),
-    )
+    candidates: list[str] = []
+    for base_dir in (PLATFORM_TOOLS_DIR, LEGACY_PLATFORM_TOOLS_DIR):
+        candidates.extend(
+            [
+                str(base_dir / platform_key / "platform-tools" / executable_name),
+                str(base_dir / platform_key / executable_name),
+                str(base_dir / "platform-tools" / executable_name),
+                str(base_dir / executable_name),
+            ]
+        )
+    return tuple(dict.fromkeys(candidates))
 
 
 ADB_CANDIDATES = (
@@ -179,6 +189,7 @@ WINDOWS: tuple[TimeWindow, ...] = (
 
 ARG_DEFAULTS = {
     "serial": None,
+    "remote_adb_target": None,
     "package": DEFAULT_PACKAGE,
     "app_label": DEFAULT_APP_LABEL,
     "delay_after_launch": DEFAULT_DELAY_AFTER_LAUNCH,
@@ -278,7 +289,7 @@ def resolve_binary(binary_name: str, configured_path: str | None, candidates: tu
             return resolved
 
     if binary_name == "adb":
-        hint = "Run scripts/install_platform_tools.py or pass the explicit path."
+        hint = "Install adb via the web console or pass the explicit path."
     else:
         hint = f"Install {binary_name} or pass the explicit path."
     raise RuntimeError(f"{binary_name} not found. {hint}")
@@ -315,6 +326,30 @@ def run_adb(adb_bin: str, serial: str | None, args: Iterable[str]) -> subprocess
         command.extend(["-s", serial])
     command.extend(args)
     return subprocess.run(command, capture_output=True, text=True, check=True)
+
+
+def adb_connect(adb_bin: str, target: str) -> str:
+    normalized = target.strip()
+    if not normalized:
+        raise RuntimeError("Remote ADB target is empty.")
+    result = subprocess.run([adb_bin, "connect", normalized], capture_output=True, text=True, check=False)
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip()).strip()
+    lowered = output.lower()
+    if result.returncode != 0 or "failed" in lowered or "cannot" in lowered or "unable" in lowered:
+        raise RuntimeError(output or f"adb connect failed: {normalized}")
+    return output or f"connected to {normalized}"
+
+
+def adb_disconnect(adb_bin: str, target: str) -> str:
+    normalized = target.strip()
+    if not normalized:
+        raise RuntimeError("Remote ADB target is empty.")
+    result = subprocess.run([adb_bin, "disconnect", normalized], capture_output=True, text=True, check=False)
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip()).strip()
+    lowered = output.lower()
+    if result.returncode != 0 or "failed" in lowered or "cannot" in lowered or "unable" in lowered:
+        raise RuntimeError(output or f"adb disconnect failed: {normalized}")
+    return output or f"disconnected {normalized}"
 
 
 def restart_adb_server(adb_bin: str) -> str:
@@ -1107,7 +1142,7 @@ def process_due_windows(config: Config, state: SchedulerState) -> None:
 
 
 def is_device_ready(status: DeviceStatus | None) -> bool:
-    return bool(status and status.state == "device" and status.usb_connected)
+    return bool(status and status.state == "device")
 
 
 def maybe_launch_scrcpy(
@@ -1301,7 +1336,7 @@ def command_doctor(args: argparse.Namespace) -> int:
     if adb_bin:
         print(f"OK   adb: {adb_bin} ({describe_binary_source(adb_bin, args.adb_bin)})")
     else:
-        issues.append("adb is required for scheduling and device checks. Run scripts/install_platform_tools.py.")
+        issues.append("adb is required for scheduling and device checks. Install adb via the web console.")
     if scrcpy_bin:
         print(f"OK   scrcpy: {scrcpy_bin} ({describe_binary_source(scrcpy_bin, args.scrcpy_bin)})")
     else:

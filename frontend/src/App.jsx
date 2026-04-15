@@ -46,6 +46,10 @@ import { APP_VERSION } from "./app-version";
 import {
   fetchDashboard,
   fetchCheckinRecords,
+  connectRemoteAdb,
+  deleteRemoteAdbTarget,
+  disconnectRemoteAdb,
+  installAdb,
   rerollSchedule,
   restartAdb,
   runDoctor,
@@ -83,16 +87,28 @@ const configGroups = [
     description: "先配置识别对象，再校验状态文件落点。",
     fields: [
       {
+        label: "远程 ADB 目标 remote_adb_target",
+        key: "remote_adb_target",
+        defaultValue: "",
+        helper: "可选。填写远程 ADB/TCP 地址，例如 192.168.1.8:5555；保存后可在网页端点“连接远程 ADB”。",
+      },
+      {
+        label: "远程目标名称 remote_adb_target_name",
+        key: "remote_adb_target_name",
+        defaultValue: "",
+        helper: "可选。给远程目标起一个便于识别的名字，例如 办公室测试机、备用 Redmi。",
+      },
+      {
         label: "设备序列号 serial",
         key: "serial",
         defaultValue: "",
-        helper: "用于绑定具体 ADB 设备；留空时会自动选择唯一在线设备。",
+        helper: "用于绑定具体 ADB 设备；留空时会自动选择唯一在线设备。远程 ADB 常见 serial 就是 host:port。",
       },
       {
         label: "ADB 路径 adb_bin",
         key: "adb_bin",
         defaultValue: "",
-        helper: "留空时优先使用内置 platform-tools/adb，再回退到系统 PATH；电脑未安装 adb 时建议先运行安装脚本。",
+        helper: "留空时优先使用服务器内置 platform-tools/adb，再回退到系统 PATH；如未安装，可直接在网页端触发在线安装。",
       },
       { label: "应用包名 package", key: "package", defaultValue: "com.alibaba.android.rimet" },
       { label: "应用名称 app_label", key: "app_label", defaultValue: "钉钉" },
@@ -215,6 +231,27 @@ const actions = [
     icon: RefreshCw,
     group: "primary",
     note: "重新读取当前设备连接、授权和日志状态。",
+  },
+  {
+    label: "连接远程 ADB",
+    style: "secondary",
+    icon: Search,
+    group: "support",
+    note: "按已保存的 remote_adb_target 执行 adb connect。",
+  },
+  {
+    label: "断开远程 ADB",
+    style: "secondary",
+    icon: X,
+    group: "support",
+    note: "按已保存的 remote_adb_target 执行 adb disconnect。",
+  },
+  {
+    label: "在线安装 ADB",
+    style: "secondary",
+    icon: Download,
+    group: "support",
+    note: "在当前云服务器安装官方 platform-tools/adb。",
   },
   {
     label: "重启 ADB",
@@ -380,6 +417,178 @@ function parseTimeToSeconds(value) {
   return hour * 3600 + minute * 60 + second;
 }
 
+function parseDashboardTimestamp(value) {
+  const raw = String(value ?? "").trim();
+  const matched = raw.match(
+    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/,
+  );
+  if (!matched) return null;
+
+  const [, year, month, day, hour, minute, second] = matched;
+  return new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+  );
+}
+
+function parseDashboardDate(value) {
+  const raw = String(value ?? "").trim();
+  const matched = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!matched) return null;
+
+  const [, year, month, day] = matched;
+  return new Date(Number(year), Number(month) - 1, Number(day));
+}
+
+function diffCalendarDays(left, right) {
+  const leftDate = new Date(left.getFullYear(), left.getMonth(), left.getDate());
+  const rightDate = new Date(right.getFullYear(), right.getMonth(), right.getDate());
+  return Math.round((leftDate - rightDate) / 86400000);
+}
+
+function padTimePart(value) {
+  return String(value).padStart(2, "0");
+}
+
+function formatParsedDate(date) {
+  return `${date.getFullYear()}-${padTimePart(date.getMonth() + 1)}-${padTimePart(date.getDate())}`;
+}
+
+function formatParsedTime(date) {
+  return `${padTimePart(date.getHours())}:${padTimePart(date.getMinutes())}:${padTimePart(date.getSeconds())}`;
+}
+
+function getCurrentBeijingDateStamp() {
+  const formatter = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = formatter.formatToParts(new Date());
+  const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const month = parts.find((part) => part.type === "month")?.value ?? "00";
+  const day = parts.find((part) => part.type === "day")?.value ?? "00";
+  return `${year}-${month}-${day}`;
+}
+
+function formatPendingWindowLabel(windowItem, now = new Date()) {
+  if (!windowItem?.selectedAt) return "待排期";
+
+  const nextRun = parseDashboardTimestamp(windowItem.selectedAt);
+  if (!nextRun) {
+    return `${windowItem.title} ${windowItem.selectedAt}`;
+  }
+
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfTargetDay = new Date(nextRun.getFullYear(), nextRun.getMonth(), nextRun.getDate());
+  const dayDiff = Math.round((startOfTargetDay - startOfToday) / 86400000);
+  const timePart = formatParsedTime(nextRun);
+
+  if (dayDiff === 0) return `今天${windowItem.title.replace("窗口", "")}待执行 ${timePart}`;
+  if (dayDiff === 1) return `明天${windowItem.title.replace("窗口", "")}待执行 ${timePart}`;
+  return `${windowItem.title}待执行 ${windowItem.selectedAt}`;
+}
+
+function getPendingWindowSummary(dashboard, windowValues) {
+  const windows = Array.isArray(dashboard?.windows) ? dashboard.windows : [];
+  const dashboardNow = parseDashboardTimestamp(dashboard?.generatedAt) ?? new Date();
+
+  const nextWindow = windows
+    .map((item) => ({
+      ...item,
+      nextRunDate: parseDashboardTimestamp(item.selectedAt),
+    }))
+    .filter((item) => item.nextRunDate instanceof Date && !Number.isNaN(item.nextRunDate.getTime()))
+    .sort((left, right) => left.nextRunDate - right.nextRunDate)[0];
+
+  if (nextWindow) {
+    const nextRun = parseDashboardTimestamp(nextWindow.selectedAt);
+    const dayDiff = nextRun ? diffCalendarDays(nextRun, dashboardNow) : null;
+    const dayLabel =
+      dayDiff === 0 ? "今天" : dayDiff === 1 ? "明天" : nextWindow.selectedAt.slice(0, 10);
+    const windowLabel = nextWindow.title.replace("窗口", "");
+    const timeLabel = nextRun
+      ? formatParsedTime(nextRun)
+      : nextWindow.selectedAt;
+
+    return {
+      value: `${dayLabel}${windowLabel}待执行`,
+      time: timeLabel,
+      detail: `${nextWindow.title}时间范围 ${nextWindow.start}-${nextWindow.end}，计划执行于 ${nextWindow.selectedAt}`,
+      tone: "warning",
+    };
+  }
+
+  return {
+    value: "等待后端排期",
+    time: `${windowValues["上午窗口-selected"]} / ${windowValues["下午窗口-selected"]}`,
+    detail: "默认按时间窗口抽取，也支持手动精确指定到秒。",
+    tone: "secondary",
+  };
+}
+
+function getWindowStatus(windowItem, dashboardGeneratedAt) {
+  const now = parseDashboardTimestamp(dashboardGeneratedAt) ?? new Date();
+  const nextRun = parseDashboardTimestamp(windowItem?.selectedAt);
+  const completedAt = parseDashboardDate(windowItem?.completed);
+
+  if (completedAt && diffCalendarDays(completedAt, now) === 0) {
+    if (nextRun && diffCalendarDays(nextRun, now) >= 1) {
+      return `今日已完成，下次 ${windowItem.title.replace("窗口", "")} 在 ${windowItem.selectedAt}`;
+    }
+    return "今日已完成";
+  }
+
+  if (nextRun) {
+    const dayDiff = diffCalendarDays(nextRun, now);
+    if (dayDiff === 0) return "今日待执行";
+    if (dayDiff === 1) return "明日待执行";
+    return `${nextRun.getMonth() + 1}月${nextRun.getDate()}日待执行`;
+  }
+
+  return "待排期";
+}
+
+function getWindowStatusTone(status) {
+  if (/今日已完成/.test(status)) return "success";
+  if (/(待执行|待排期)/.test(status)) return "warning";
+  return "secondary";
+}
+
+function getLatestSuccessSummary(records, dashboardGeneratedAt) {
+  const now = parseDashboardTimestamp(dashboardGeneratedAt) ?? new Date();
+  const successRecord = (Array.isArray(records) ? records : []).find(
+    (record) => record?.status === "成功" && record?.date && record?.time,
+  );
+
+  if (!successRecord) {
+    return {
+      headline: "暂无完成记录",
+      time: "--:--:--",
+      detail: "等待后端返回执行结果。",
+      tone: "secondary",
+    };
+  }
+
+  const completedAt = parseDashboardTimestamp(`${successRecord.date} ${successRecord.time}`);
+  const dayDiff = completedAt ? diffCalendarDays(completedAt, now) : null;
+  const checkinType = normalizeCheckinType(successRecord.type).replace("打卡", "");
+  const dayLabel =
+    dayDiff === 0 ? "今天" : dayDiff === 1 ? "昨天" : successRecord.date;
+
+  return {
+    headline: `${dayLabel}${checkinType}已完成`,
+    time: successRecord.time,
+    detail: successRecord.remark || `完成于 ${successRecord.date} ${successRecord.time}`,
+    tone: "success",
+  };
+}
+
 function buildConfigStateFromDashboard(dashboard) {
   if (!dashboard?.config) return { ...initialConfigState };
 
@@ -452,6 +661,9 @@ function buildConfigPayload(configValues, windowValues, toggleValues, baseConfig
   if (Object.prototype.hasOwnProperty.call(payload, "serial")) {
     payload.serial = payload.serial.trim();
   }
+  if (Object.prototype.hasOwnProperty.call(baseConfig, "recent_remote_adb_targets")) {
+    payload.recent_remote_adb_targets = baseConfig.recent_remote_adb_targets;
+  }
 
   Object.entries(TOGGLE_FIELD_MAP).forEach(([label, key]) => {
     payload[key] = Boolean(toggleValues[label]);
@@ -476,12 +688,16 @@ function formatDeviceConnectionNote(deviceState) {
     return `ADB 未就绪：${deviceState.adbInstallHint ?? "先安装 platform-tools/adb"}`;
   }
 
+  if (deviceState.remoteAdbTarget && !deviceState.remoteAdbConnected && deviceState.deviceCount === 0) {
+    return `远程目标 ${deviceState.remoteAdbTarget} 尚未连通，请先点击“连接远程 ADB”。`;
+  }
+
   if (!deviceState.serial && deviceState.deviceCount > 1) {
     return `检测到 ${deviceState.deviceCount} 台设备，请配置 serial 绑定目标设备。`;
   }
 
   if (deviceState.deviceCount === 0) {
-    return "未发现在线设备，请确认 USB 已连接并开启 USB 调试。";
+    return "未发现在线设备，请确认 USB 已连接、远程 ADB 已连通，或重新刷新设备状态。";
   }
 
   if (deviceState.usbConnected && !deviceState.authorized) {
@@ -489,8 +705,9 @@ function formatDeviceConnectionNote(deviceState) {
   }
 
   const adbSource = deviceState.adbSource ? `ADB ${deviceState.adbSource}` : "ADB 已找到";
+  const mode = deviceState.usbConnected ? "USB" : deviceState.remoteAdbConnected ? "远程 ADB" : "ADB";
   const serial = deviceState.serial ? `serial: ${deviceState.serial}` : "等待设备连接或授权";
-  return `${serial} / ${adbSource}`;
+  return `${serial} / ${mode} / ${adbSource}`;
 }
 
 function App() {
@@ -537,6 +754,9 @@ function App() {
         "一键自检",
         "查看排期",
         "刷新设备状态",
+        "连接远程 ADB",
+        "断开远程 ADB",
+        "在线安装 ADB",
         "重启 ADB",
         "连接向导",
         "停止任务",
@@ -687,7 +907,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `打卡记录_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `打卡记录_${getCurrentBeijingDateStamp()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
     toast.success("导出成功", { description: `已导出 ${filteredRecords.length} 条记录` });
@@ -698,12 +918,84 @@ function App() {
     setRecordPage(1);
   }, []);
 
-  const scheduleSummary = useMemo(
-    () =>
-      dashboard?.scheduleSummary ??
-      `${windowValues["上午窗口-selected"]} / ${windowValues["下午窗口-selected"]}`,
+  const handleUseRemoteAdbTarget = useCallback((target) => {
+    const normalizedTarget = typeof target === "string" ? target : target?.target || "";
+    const normalizedName = typeof target === "string" ? "" : target?.name || "";
+    handleConfigChange("远程 ADB 目标 remote_adb_target", normalizedTarget);
+    handleConfigChange("远程目标名称 remote_adb_target_name", normalizedName);
+    toast.success("已填入远程目标", {
+      description: `${normalizedName ? `${normalizedName} / ` : ""}${normalizedTarget} 已写入当前草稿，保存配置后生效。`,
+    });
+  }, []);
+
+  const handleDeleteRemoteAdbTarget = useCallback(async (target) => {
+    const normalizedTarget = typeof target === "string" ? target : target?.target || "";
+    try {
+      const response = await deleteRemoteAdbTarget(normalizedTarget);
+      if (response?.dashboard) {
+        hydrateDashboard(response.dashboard, true);
+      }
+      toast.success(response?.message || "远程目标已删除", {
+        description: response?.detail || `${normalizedTarget} 已从最近使用列表移除。`,
+      });
+    } catch (error) {
+      toast.error("删除远程目标失败", {
+        description: error.message,
+      });
+    }
+  }, [hydrateDashboard]);
+
+  const pendingWindowSummary = useMemo(
+    () => getPendingWindowSummary(dashboard, windowValues),
     [dashboard, windowValues],
   );
+  const scheduleSummary = pendingWindowSummary.value;
+  const latestSuccessSummary = useMemo(
+    () => getLatestSuccessSummary(checkinRecords, dashboard?.generatedAt),
+    [checkinRecords, dashboard?.generatedAt],
+  );
+  const remoteAdbSummary = useMemo(() => {
+    const deviceState = dashboard?.device;
+    const remoteAdbState = dashboard?.remoteAdb;
+    const target = deviceState?.remoteAdbTarget || remoteAdbState?.target || "";
+    const targetName = deviceState?.remoteAdbTargetName || "";
+
+    if (!target) {
+      return {
+        headline: "未配置远程目标",
+        detail: "在任务配置里填写 remote_adb_target 后，可直接在网页端连接或断开远程 ADB。",
+        time: "等待配置",
+        tone: "secondary",
+      };
+    }
+
+    if (deviceState?.remoteAdbConnected) {
+      return {
+        headline: targetName ? `${targetName} 已连接` : "远程 ADB 已连接",
+        detail: remoteAdbState?.detail || `${target} 当前已连通，可继续刷新状态或执行自检。`,
+        time: remoteAdbState?.checkedAtLabel || `${targetName ? `${targetName} / ` : ""}${target}`,
+        tone: "success",
+      };
+    }
+
+    if (remoteAdbState?.detail) {
+      return {
+        headline: remoteAdbState?.ok === false
+          ? (targetName ? `${targetName} 连接失败` : "远程 ADB 连接失败")
+          : (targetName ? `${targetName} 未连接` : "远程 ADB 未连接"),
+        detail: remoteAdbState.detail,
+        time: remoteAdbState?.checkedAtLabel || `${targetName ? `${targetName} / ` : ""}${target}`,
+        tone: remoteAdbState?.ok === false ? "destructive" : "warning",
+      };
+    }
+
+    return {
+      headline: targetName ? `${targetName} 待连接` : "远程 ADB 待连接",
+      detail: `${target} 已保存，点击“连接远程 ADB”后再刷新设备状态。`,
+      time: `${targetName ? `${targetName} / ` : ""}${target}`,
+      tone: "warning",
+    };
+  }, [dashboard]);
 
   const metrics = useMemo(() => {
     const morningWindow = getWindowFromDashboard(dashboard, "morning");
@@ -726,26 +1018,29 @@ function App() {
       {
         label: "设备状态",
         value: deviceLabel,
-        note: deviceState?.error || formatDeviceConnectionNote(deviceState),
+        note:
+          dashboard?.remoteAdb?.detail && dashboard?.remoteAdb?.checkedAtLabel
+            ? `${deviceState?.error || formatDeviceConnectionNote(deviceState)} / 最近远程 ADB：${dashboard.remoteAdb.checkedAtLabel}`
+            : deviceState?.error || formatDeviceConnectionNote(deviceState),
         icon: Smartphone,
       },
       {
         label: "下一次上午执行",
         value: morningWindow?.selected ?? windowValues["上午窗口-selected"],
-        note: morningWindow?.selectedAt || "默认按时间范围抽取，也可以手动精确指定到秒。",
+        note: morningWindow?.selectedAtLabel || "默认按时间范围抽取，也可以手动精确指定到秒。",
         icon: AlarmClockCheck,
       },
       {
         label: "最近成功执行",
-        value: dashboard?.lastSuccess?.label ?? "暂无执行记录",
+        value: latestSuccessSummary.headline,
         note:
-          workdayState?.enabled && workdayState?.checkedDate
-            ? `${workdayState.checkedDate} / ${workdayState.note || "已校验"}`
+          workdayState?.enabled && workdayState?.checkedDateLabel
+            ? `${workdayState.checkedDateLabel} / ${workdayState.note || "已校验"}`
             : "工作日状态会在后端返回后显示。",
         icon: BadgeCheck,
       },
     ];
-  }, [dashboard, windowValues]);
+  }, [dashboard, latestSuccessSummary.headline, windowValues]);
 
   const statusRows = useMemo(() => {
     const morningWindow = getWindowFromDashboard(dashboard, "morning");
@@ -753,8 +1048,8 @@ function App() {
     const workdayState = dashboard?.workday;
     const connectorLabel = apiError
       ? "离线 / 无法读取后端"
-      : dashboard?.generatedAt
-        ? `在线 / ${dashboard.generatedAt.replace("T", " ").split(".")[0]}`
+      : dashboard?.generatedAtLabel
+        ? `在线 / ${dashboard.generatedAtLabel}`
         : "在线 / 等待时间戳";
 
     return [
@@ -772,7 +1067,25 @@ function App() {
           ? "待后端返回"
           : dashboard.device.adbAvailable
             ? `${dashboard.device.adbSource ?? "已找到"} / ${dashboard.device.adbBin ?? "adb"}`
-            : `未安装 / ${dashboard.device.adbInstallHint ?? "运行 platform-tools 安装脚本"}`,
+            : `未安装 / ${dashboard.device.adbInstallHint ?? "在网页端点击“在线安装 ADB”"}`,
+      ],
+      [
+        "远程 ADB 目标",
+        dashboard?.device?.remoteAdbTarget
+          ? `${dashboard.device.remoteAdbTargetName ? `${dashboard.device.remoteAdbTargetName} / ` : ""}${dashboard.device.remoteAdbTarget} / ${dashboard.device.remoteAdbConnected ? "已连接" : "未连接"}`
+          : "未配置",
+      ],
+      [
+        "最近远程 ADB 动作",
+        dashboard?.remoteAdb?.action
+          ? `${dashboard.remoteAdb.action === "connect" ? "连接" : "断开"} / ${dashboard.remoteAdb.ok ? "成功" : "失败"}`
+          : "暂无记录",
+      ],
+      [
+        "最近远程 ADB 结果",
+        dashboard?.remoteAdb?.detail
+          ? `${dashboard.remoteAdb.detail}${dashboard.remoteAdb.checkedAtLabel ? ` / ${dashboard.remoteAdb.checkedAtLabel}` : ""}`
+          : "暂无记录",
       ],
       [
         "scrcpy 前台观察",
@@ -782,19 +1095,24 @@ function App() {
             : "已启用 / scrcpy 不可用"
           : "已关闭 / 仅保持设备连接",
       ],
-      ["上午下一次执行时间", morningWindow?.selectedAt ?? windowValues["上午窗口-selected"]],
-      ["下午下一次执行时间", eveningWindow?.selectedAt ?? windowValues["下午窗口-selected"]],
-      ["最近一次成功执行时间", dashboard?.lastSuccess?.label ?? "暂无执行记录"],
+      ["上午下一次执行时间", morningWindow?.selectedAtLabel ?? windowValues["上午窗口-selected"]],
+      ["下午下一次执行时间", eveningWindow?.selectedAtLabel ?? windowValues["下午窗口-selected"]],
+      [
+        "最近一次成功执行时间",
+        latestSuccessSummary.headline === "暂无完成记录"
+          ? "暂无执行记录"
+          : `${latestSuccessSummary.headline} ${latestSuccessSummary.time}`,
+      ],
       [
         "最近一次工作日校验结果",
         !workdayState?.enabled
           ? "已关闭"
           : workdayState?.error
             ? `失败 / ${workdayState.error}`
-            : `${workdayState?.checkedDate ?? "待校验"} / ${workdayState?.note ?? "待返回"}`,
+            : `${workdayState?.checkedDateLabel ?? "待校验"} / ${workdayState?.note ?? "待返回"}`,
       ],
     ];
-  }, [apiError, dashboard, toggleValues, windowValues]);
+  }, [apiError, dashboard, latestSuccessSummary, toggleValues, windowValues]);
 
   const statusTags = dashboard?.statusTags ?? ["等待后端状态"];
   const toggles = dashboard?.toggles ?? [];
@@ -856,6 +1174,11 @@ function App() {
     const workdayUrl = String(configValues["工作日接口地址"] || "").trim();
     if (!/^https?:\/\//.test(workdayUrl)) {
       add("工作日接口地址", "工作日接口地址必须以 http:// 或 https:// 开头。");
+    }
+
+    const remoteAdbTarget = String(configValues["远程 ADB 目标 remote_adb_target"] || "").trim();
+    if (remoteAdbTarget && !/^[^:\s]+:\d{1,5}$/.test(remoteAdbTarget)) {
+      add("远程 ADB 目标 remote_adb_target", "远程 ADB 目标格式应为 host:port，例如 192.168.1.8:5555。");
     }
 
     windowsData.forEach((item) => {
@@ -923,10 +1246,19 @@ function App() {
         title: "当前优先项：安装 ADB 连接器",
         detail: dashboard.device.error || "ADB 未就绪，无法继续设备动作。",
         chips: [
-          dashboard.device.adbInstallHint || "python3 scripts/install_platform_tools.py",
+          dashboard.device.adbInstallHint || "在网页端点击“在线安装 ADB”",
           "安装后刷新设备状态",
           "如需指定路径，可在前台填写 adb_bin",
         ],
+      };
+    }
+
+    if (dashboard?.device?.remoteAdbTarget && !dashboard.device.remoteAdbConnected && dashboard.device.deviceCount === 0) {
+      return {
+        tone: "warning",
+        title: "当前优先项：连接远程 ADB 目标",
+        detail: `已配置远程目标 ${dashboard.device.remoteAdbTarget}，但后端尚未连通。`,
+        chips: ["先点击连接远程 ADB", "连接后刷新设备状态", "必要时检查目标网络、端口和无线调试"],
       };
     }
 
@@ -1434,6 +1766,13 @@ function App() {
           description: nextDashboard?.device?.error || "已从后端重新读取设备、排期与日志状态。",
         });
         return;
+      } else if (label === "连接远程 ADB") {
+        response = await connectRemoteAdb();
+      } else if (label === "断开远程 ADB") {
+        toastMethod = "warning";
+        response = await disconnectRemoteAdb();
+      } else if (label === "在线安装 ADB") {
+        response = await installAdb();
       } else if (label === "重启 ADB") {
         toastMethod = "warning";
         response = await restartAdb();
@@ -1476,12 +1815,14 @@ function App() {
 
   const wizardSteps = useMemo(() => {
     const steps = [];
-    const adbInstallCommand = deviceState?.adbInstallHint || "python3 scripts/install_platform_tools.py";
+    const adbInstallHint = deviceState?.adbInstallHint || "在网页端点击“在线安装 ADB”";
     const backendCommand = "python3 backend/api_server.py";
     const deviceCount = deviceState?.deviceCount ?? 0;
     const onlineCount = deviceState?.onlineCount ?? 0;
     const unauthorizedCount = deviceState?.unauthorizedCount ?? 0;
     const serial = deviceState?.serial ?? "";
+    const remoteTarget = deviceState?.remoteAdbTarget ?? "";
+    const remoteConnected = Boolean(deviceState?.remoteAdbConnected);
     const adbError = deviceState?.error ?? "";
     const needsSerial = deviceCount > 1 && !serial;
     const needsAdbRestart = /ADB 服务启动失败|daemon|5037/i.test(adbError);
@@ -1489,7 +1830,7 @@ function App() {
     steps.push({
       key: "backend",
       title: "启动后端服务",
-      detail: "确保本机的 api_server 正在运行，否则无法读取设备状态。",
+      detail: "确保当前服务器上的 api_server 正在运行，否则无法读取设备状态。",
       done: !apiError,
       code: backendCommand,
       primaryAction: {
@@ -1506,16 +1847,16 @@ function App() {
       key: "adb",
       title: "安装 ADB",
       detail: deviceState?.adbAvailable
-        ? "已检测到 ADB，可进入下一步。"
-        : "安装官方 platform-tools，或在前台配置 adb_bin。",
+        ? "已检测到云端 ADB，可进入下一步。"
+        : "在当前云服务器安装官方 platform-tools/adb，或在前台配置 adb_bin。",
       done: Boolean(deviceState?.adbAvailable),
-      code: adbInstallCommand,
+      code: adbInstallHint,
       primaryAction: {
-        label: "复制安装命令",
-        onClick: () => copyToClipboard(adbInstallCommand, "安装命令已复制"),
+        label: "在线安装 ADB",
+        onClick: () => handleAction("在线安装 ADB"),
       },
       secondaryAction: {
-        label: "我已安装，刷新",
+        label: "安装后刷新",
         onClick: () => handleAction("刷新设备状态"),
       },
     });
@@ -1526,12 +1867,25 @@ function App() {
       detail:
         deviceCount > 0
           ? `已检测到 ${deviceCount} 台设备，在线 ${onlineCount} 台。`
-          : "未检测到设备，请连接 USB 并开启 USB 调试。",
+          : remoteTarget
+            ? `当前远程目标为 ${remoteTarget}，请先执行远程连接。`
+            : "未检测到设备，请连接 USB 并开启 USB 调试。",
       done: deviceCount > 0,
-      primaryAction: {
-        label: "刷新设备状态",
-        onClick: () => handleAction("刷新设备状态"),
-      },
+      primaryAction: remoteTarget && !remoteConnected
+        ? {
+            label: "连接远程 ADB",
+            onClick: () => handleAction("连接远程 ADB"),
+          }
+        : {
+            label: "刷新设备状态",
+            onClick: () => handleAction("刷新设备状态"),
+          },
+      secondaryAction: remoteTarget && !remoteConnected
+        ? {
+            label: "刷新设备状态",
+            onClick: () => handleAction("刷新设备状态"),
+          }
+        : null,
     });
 
     steps.push({
@@ -1590,7 +1944,7 @@ function App() {
     });
 
     return steps;
-  }, [apiError, copyToClipboard, deviceState, handleAction, scrollToSection]);
+  }, [apiError, deviceState, handleAction, scrollToSection]);
 
   const activeWizardStep = useMemo(() => {
     if (!wizardSteps.length) return null;
@@ -1860,6 +2214,46 @@ function App() {
                         ))}
                       </div>
 
+                      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+                        <RemoteAdbPanel
+                          summary={remoteAdbSummary}
+                          pendingAction={pendingAction}
+                          onConnect={() => handleAction("连接远程 ADB")}
+                          onDisconnect={() => handleAction("断开远程 ADB")}
+                          onRefresh={() => handleAction("刷新设备状态")}
+                        />
+                        <Card className="bg-muted/20">
+                          <CardHeader className="pb-4">
+                            <CardTitle>远程目标建议</CardTitle>
+                            <CardDescription>最近使用过的远程 ADB 目标会自动保留在配置里。</CardDescription>
+                          </CardHeader>
+                          <CardContent className="space-y-3">
+                            {(dashboard?.config?.recent_remote_adb_targets ?? []).length ? (
+                              (dashboard?.config?.recent_remote_adb_targets ?? []).map((target) => (
+                                <div key={target.target ?? target} className="flex items-center justify-between gap-3 rounded-lg border bg-background/70 px-4 py-3 text-sm">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="truncate font-medium text-foreground">{target.name || target.target || target}</div>
+                                    {target.name ? <div className="truncate text-xs text-muted-foreground">{target.target}</div> : null}
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Button variant="outline" size="sm" onClick={() => handleUseRemoteAdbTarget(target)}>
+                                      填入
+                                    </Button>
+                                    <Button variant="outline" size="sm" onClick={() => handleDeleteRemoteAdbTarget(target)}>
+                                      删除
+                                    </Button>
+                                  </div>
+                                </div>
+                              ))
+                            ) : (
+                              <p className="text-sm leading-6 text-muted-foreground">
+                                还没有历史目标。首次连接成功或失败后，这里会自动沉淀最近使用的 `host:port`。
+                              </p>
+                            )}
+                          </CardContent>
+                        </Card>
+                      </div>
+
                       <div className="grid gap-5 lg:grid-cols-2">
                         <Card className="bg-muted/20">
                           <CardHeader className="pb-4">
@@ -2077,16 +2471,36 @@ function App() {
                     <CardContent className="region-card-content space-y-5 pt-5">
                       <SectionState {...scheduleStatus} />
                       <div className="grid items-stretch gap-4 lg:grid-cols-2">
-                        <MiniPanel title="今日下一次计划" value={scheduleSummary} detail="默认按时间窗口抽取，也支持手动精确指定到秒。" />
-                        <MiniPanel
+                        <PendingWindowPanel
+                          title="当前待执行窗口"
+                          headline={scheduleSummary}
+                          time={pendingWindowSummary.time}
+                          detail={pendingWindowSummary.detail}
+                          tone={pendingWindowSummary.tone}
+                        />
+                        <PendingWindowPanel
                           title="最近完成记录"
-                          value={dashboard?.lastSuccess?.label ?? "暂无执行记录"}
-                          detail={dashboard?.workday?.checkedDate ? `最近工作日校验：${dashboard.workday.checkedDate}` : "等待后端返回执行结果。"}
+                          headline={latestSuccessSummary.headline}
+                          time={latestSuccessSummary.time}
+                          detail={
+                            dashboard?.workday?.checkedDate
+                              ? `${latestSuccessSummary.detail} / 最近工作日校验：${dashboard.workday.checkedDateLabel ?? dashboard.workday.checkedDate}`
+                              : latestSuccessSummary.detail
+                          }
+                          tone={latestSuccessSummary.tone}
                         />
                       </div>
 
                       <div className="grid gap-5 lg:grid-cols-2">
                         {windowsData.map((item, index) => (
+                          (() => {
+                            const currentWindow = getWindowFromDashboard(dashboard, item.name);
+                            const currentWindowStatus = getWindowStatus(
+                              currentWindow,
+                              dashboard?.generatedAt,
+                            );
+
+                            return (
                           <Card
                             key={item.title}
                             className={cn(
@@ -2149,15 +2563,29 @@ function App() {
                                   />
                                   <div className="grid gap-3 sm:grid-cols-2">
                                     <SummaryRow label="保存后生效时间" value={windowValues[`${item.title}-custom`]} emphasized />
-                                    <SummaryRow label="当前下一次执行" value={windowValues[`${item.title}-selected`]} />
+                                    <SummaryRow
+                                      label="当前已排期"
+                                      value={currentWindow?.selectedAtLabel ?? windowValues[`${item.title}-selected`]}
+                                    />
                                   </div>
                                 </div>
                               </div>
                               <div className="mt-auto">
-                                <SummaryRow label="最近完成日期" value={windowValues[`${item.title}-completed`]} />
+                                <SummaryRow
+                                  label="当前状态"
+                                  value={currentWindowStatus}
+                                  emphasized
+                                  tone={getWindowStatusTone(currentWindowStatus)}
+                                />
+                                <SummaryRow
+                                  label="最近完成日期"
+                                  value={currentWindow?.completedLabel ?? windowValues[`${item.title}-completed`]}
+                                />
                               </div>
                             </CardContent>
                           </Card>
+                            );
+                          })()
                         ))}
                       </div>
                     </CardContent>
@@ -2209,6 +2637,17 @@ function App() {
                                       devices={deviceState?.devices ?? []}
                                       deviceCount={deviceState?.deviceCount ?? 0}
                                       onRefresh={() => handleAction("刷新设备状态")}
+                                    />
+                                  ) : field.key === "remote_adb_target" ? (
+                                    <RemoteAdbTargetField
+                                      key={field.label}
+                                      label={field.label}
+                                      value={configValues[field.label]}
+                                      onChange={(nextValue) => handleConfigChange(field.label, nextValue)}
+                                      dirty={isConfigFieldDirty(field.label)}
+                                      error={validation[field.label]}
+                                      helper={field.helper}
+                                      recentTargets={dashboard?.config?.recent_remote_adb_targets ?? []}
                                     />
                                   ) : (
                                     <Field
@@ -2648,15 +3087,16 @@ function App() {
                               <article className="guide-doc-note-card">
                                 <h3>准备阶段</h3>
                                 <ul className="guide-doc-list mt-3">
-                                  <li>确认本机能运行后端服务。</li>
-                                  <li>确认已经安装或准备安装 ADB。</li>
+                                  <li>确认云服务器上的后端服务已部署并可访问。</li>
+                                  <li>如 ADB 未就绪，直接在网页端执行“在线安装 ADB”。</li>
+                                  <li>先确认手机不是只插在你本地电脑上，而是接在运行 ADB 的那台机器，或已打通远程 ADB。</li>
                                   <li>准备好需要连接的安卓手机和 USB 数据线。</li>
                                 </ul>
                               </article>
                               <article className="guide-doc-note-card">
                                 <h3>配置阶段</h3>
                                 <ul className="guide-doc-list mt-3">
-                                  <li>进入“任务配置”，检查 serial、adb_bin、应用包名和状态文件路径。</li>
+                                  <li>进入“任务配置”，检查 remote_adb_target、serial、adb_bin、应用包名和状态文件路径。</li>
                                   <li>核对上午/下午时间窗口，确认下一次执行时间合理。</li>
                                   <li>多设备场景下优先绑定 serial，避免误选设备。</li>
                                 </ul>
@@ -2691,10 +3131,30 @@ function App() {
                               如果你是第一次接入，建议先看这里。连接成功后，再去做排期设置和正式启动，会更顺畅。
                             </p>
 
+                            <article className="overflow-hidden rounded-2xl border border-red-200/70 bg-red-50/70 dark:border-red-900/40 dark:bg-red-950/20">
+                              <div className="border-b border-red-200/70 px-5 py-4 dark:border-red-900/40">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge variant="destructive" className="rounded-md">先确认</Badge>
+                                  <h3 className="text-base font-semibold">云服务器装上 ADB，不等于云服务器能看到你的手机</h3>
+                                </div>
+                                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                                  在线安装 ADB 只解决依赖安装问题。要让设备真正出现在控制台里，手机必须接在运行 ADB 的那台机器上，或者已经配置好远程 ADB/TCP。
+                                </p>
+                              </div>
+                              <div className="px-5 py-4">
+                                <ul className="guide-doc-list space-y-3">
+                                  <li><strong>可行：</strong> 后端跑在本机，手机通过 USB 插在本机。</li>
+                                  <li><strong>可行：</strong> 后端跑在云服务器，但手机接在该服务器可访问的设备连接器环境，或已打通远程 ADB。</li>
+                                  <li><strong>通常不可行：</strong> 后端跑在 Railway/云服务器，手机只插在你自己的电脑上。</li>
+                                  <li><strong>远程模式最小顺序：</strong> 先保存 remote_adb_target，再连接远程 ADB、刷新设备状态，最后执行一键自检。</li>
+                                </ul>
+                              </div>
+                            </article>
+
                             <div className="space-y-4">
                               <GuideAccordionItem
-                                title="电脑端操作"
-                                description="安装 ADB、启动后端、刷新状态和执行自检，都属于电脑端操作。"
+                                title="控制台操作"
+                                description="ADB 安装、状态刷新和自检都可在网页端触发，安装实际在云服务器执行。"
                                 open={activeGuidePanel === "desktop"}
                                 onToggle={() =>
                                   setActiveGuidePanel((current) => (current === "desktop" ? "" : "desktop"))
@@ -2703,7 +3163,7 @@ function App() {
 
                                 <div className="mt-3 space-y-3">
                                   <p className="text-sm leading-6 text-muted-foreground">
-                                    按下面顺序完成电脑端检查，确认本机依赖、ADB 状态和控制台连接都正常。
+                                    按下面顺序完成控制台检查，确认云端依赖、ADB 状态和设备连接都正常。
                                   </p>
                                   <div className="guide-flow">
                                     <div className="guide-flow-rail" aria-hidden="true" />
@@ -2760,11 +3220,17 @@ function App() {
                                         </div>
                                       );
                                     })}
-                                    <div className="guide-flow-footer">
+                                  <div className="guide-flow-footer">
                                       <p className="text-xs text-muted-foreground">
                                         每完成一步建议点击“刷新状态”，让控制台同步最新设备信息。
                                       </p>
                                       <div className="flex items-center gap-2">
+                                        <Button variant="outline" size="sm" onClick={() => handleAction("连接远程 ADB")}>
+                                          连接远程 ADB
+                                        </Button>
+                                        <Button variant="outline" size="sm" onClick={() => handleAction("断开远程 ADB")}>
+                                          断开远程 ADB
+                                        </Button>
                                         <Button size="sm" onClick={() => handleAction("刷新设备状态")}>
                                           刷新状态
                                         </Button>
@@ -2791,6 +3257,43 @@ function App() {
                                   <li>完成后回到控制台，点击“刷新设备状态”或执行“一键自检”。</li>
                                 </ol>
                               </GuideAccordionItem>
+
+                              <GuideAccordionItem
+                                title="远程 ADB/TCP"
+                                description="适合后端在云端、设备不直接插在服务端 USB 上的场景。"
+                                open={activeGuidePanel === "remote-adb"}
+                                onToggle={() =>
+                                  setActiveGuidePanel((current) => (current === "remote-adb" ? "" : "remote-adb"))
+                                }
+                              >
+                                <div className="space-y-4">
+                                  <div className="rounded-xl border bg-background/70 p-4">
+                                    <p className="text-sm font-medium text-foreground">方案 A：Android 11+ 无线调试</p>
+                                    <ol className="guide-doc-steps mt-3">
+                                      <li>让手机和运行 ADB 的那台机器处于可互通的同一局域网。</li>
+                                      <li>在手机开发者选项里打开“无线调试”。</li>
+                                      <li>查看手机展示的调试地址，整理成 `host:port`。</li>
+                                      <li>回到控制台，把这个值填进 `remote_adb_target`。</li>
+                                      <li>点击“连接远程 ADB”，再刷新设备状态。</li>
+                                    </ol>
+                                  </div>
+
+                                  <div className="rounded-xl border bg-background/70 p-4">
+                                    <p className="text-sm font-medium text-foreground">方案 B：传统 adb tcpip 5555</p>
+                                    <ol className="guide-doc-steps mt-3">
+                                      <li>先把手机通过 USB 接到一台已经安装 ADB 的电脑上。</li>
+                                      <li>确认 `adb devices` 能看到手机且状态为 `device`。</li>
+                                      <li>执行 `adb tcpip 5555`。</li>
+                                      <li>查出手机当前局域网 IP，并在控制台填写 `手机IP:5555`。</li>
+                                      <li>点击“连接远程 ADB”，再刷新设备状态。</li>
+                                    </ol>
+                                  </div>
+
+                                  <p className="text-sm leading-6 text-muted-foreground">
+                                    两种方式的共同前提都是：手机和运行 ADB 的那台机器必须网络可达；如果地址或端口变化，需要同步更新 `remote_adb_target`。
+                                  </p>
+                                </div>
+                              </GuideAccordionItem>
                             </div>
 
                             <article className="mt-4 overflow-hidden rounded-2xl border border-amber-200/70 bg-amber-50/70 dark:border-amber-900/40 dark:bg-amber-950/20">
@@ -2800,7 +3303,7 @@ function App() {
                                   <h3 className="text-base font-semibold">连接失败时先看这里</h3>
                                 </div>
                                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                                  大多数连接问题都集中在数据线、USB 模式、授权弹窗和多设备绑定这四类场景。
+                                  大多数连接问题都集中在数据线、USB 模式、授权弹窗、多设备绑定，以及远程 ADB 目标不可达这几类场景。
                                 </p>
                               </div>
                               <div className="px-5 py-4">
@@ -2808,6 +3311,7 @@ function App() {
                                   <li><strong>看不到设备：</strong> 先换数据线、USB 口，确认手机不是“仅充电”模式。</li>
                                   <li><strong>设备显示 unauthorized：</strong> 说明手机还没点授权，解锁屏幕后重新插拔或重新授权。</li>
                                   <li><strong>多台设备同时在线：</strong> 需要在“任务配置”里填写 serial，绑定目标设备。</li>
+                                  <li><strong>远程 ADB 连不上：</strong> 先检查 remote_adb_target 是否为 `host:port`，以及目标网络和端口是否可达。</li>
                                   <li><strong>ADB 已安装但还是失败：</strong> 可先点“重启 ADB”，再重新刷新状态。</li>
                                 </ul>
                               </div>
@@ -3471,11 +3975,21 @@ function SectionState({
   );
 }
 
-function SummaryRow({ label, value, emphasized = false }) {
+function SummaryRow({ label, value, emphasized = false, tone = null }) {
+  const resolvedTone = tone ?? (emphasized ? "warning" : statusTone(value));
+  const toneSet = toneClasses(resolvedTone);
   return (
-    <div className="flex items-start justify-between gap-4 rounded-lg border bg-muted/20 px-4 py-2">
+    <div className={cn("flex items-start justify-between gap-4 rounded-lg border px-4 py-2", toneSet.panel)}>
       <span className="text-sm text-muted-foreground">{label}</span>
-      <span className={cn("max-w-[60%] text-right text-sm text-muted-foreground", emphasized && "font-medium text-foreground")}>
+      <span
+        className={cn(
+          "max-w-[60%] text-right text-sm text-muted-foreground",
+          emphasized && "font-medium text-foreground",
+          resolvedTone === "success" && "text-emerald-700 dark:text-emerald-300",
+          resolvedTone === "warning" && "text-amber-700 dark:text-amber-300",
+          resolvedTone === "destructive" && "text-red-700 dark:text-red-300",
+        )}
+      >
         {value}
       </span>
     </div>
@@ -3623,6 +4137,62 @@ function SerialField({
   );
 }
 
+function RemoteAdbTargetField({
+  label,
+  dirty,
+  error,
+  helper,
+  value,
+  onChange,
+  recentTargets,
+}) {
+  const listId = "remote-adb-target-suggestions";
+  const normalizedRecentTargets = recentTargets.map((target) =>
+    target && typeof target === "object"
+      ? { name: target.name || "", target: target.target || "" }
+      : { name: "", target: String(target || "") },
+  ).filter((target) => target.target);
+  return (
+    <label className="space-y-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-medium">{label}</span>
+        {dirty ? (
+          <Badge variant="outline" className="rounded-md text-xs">
+            已修改
+          </Badge>
+        ) : null}
+      </div>
+      <Input
+        list={listId}
+        className={cn(
+          "h-10 rounded-lg border-border bg-background/80",
+          dirty && "border-zinc-400 dark:border-zinc-500",
+          error && "border-red-400 focus-visible:ring-red-300 dark:border-red-500 dark:focus-visible:ring-red-900",
+        )}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="例如 192.168.1.8:5555"
+      />
+      {normalizedRecentTargets.length ? (
+        <datalist id={listId}>
+          {normalizedRecentTargets.map((target) => (
+            <option key={target.target} value={target.target}>
+              {target.name || target.target}
+            </option>
+          ))}
+        </datalist>
+      ) : null}
+      {helper ? <p className="text-xs leading-6 text-muted-foreground">{helper}</p> : null}
+      {normalizedRecentTargets.length ? (
+        <p className="text-xs leading-6 text-muted-foreground">
+          最近使用：{normalizedRecentTargets.map((target) => target.name || target.target).join(" / ")}
+        </p>
+      ) : null}
+      {error ? <p className="text-xs text-red-500">{error}</p> : null}
+    </label>
+  );
+}
+
 function TimePickerField({
   label,
   dirty,
@@ -3697,7 +4267,7 @@ function LogRow({ log }) {
     <div className={cn("rounded-xl border p-4", toneSet.panel)}>
       <div className="grid gap-3 sm:grid-cols-[88px_minmax(0,1fr)_auto] sm:items-start">
         <Badge variant="outline" className={cn("h-fit w-fit rounded-md", toneSet.soft)}>
-          {log.time}
+          {log.timeLabel ?? log.time}
         </Badge>
         <div className="space-y-1.5">
           <p className="text-sm font-medium">{log.title}</p>
@@ -3754,6 +4324,69 @@ function MiniPanel({ title, value, detail }) {
       </div>
       <p className="mt-4 text-sm leading-6 text-muted-foreground">{detail}</p>
     </div>
+  );
+}
+
+function PendingWindowPanel({ title, headline, time, detail, tone = "warning" }) {
+  const toneSet = toneClasses(tone);
+
+  return (
+    <div className={cn("flex h-full flex-col justify-between rounded-xl border p-4", toneSet.panel)}>
+      <div className="space-y-3">
+        <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{title}</p>
+        <div className="space-y-2">
+          <h3 className="text-xl font-semibold tracking-tight">{headline}</h3>
+          <div
+            className={cn(
+              "inline-flex w-fit items-center rounded-md border px-3 py-1 text-base font-medium",
+              toneSet.icon,
+            )}
+          >
+            {time}
+          </div>
+        </div>
+      </div>
+      <p className="mt-4 text-sm leading-6 text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
+
+function RemoteAdbPanel({ summary, pendingAction, onConnect, onDisconnect, onRefresh }) {
+  const toneSet = toneClasses(summary.tone);
+  return (
+    <Card className={cn("h-full", toneSet.panel)}>
+      <CardHeader className="pb-4">
+        <CardTitle>远程 ADB 状态</CardTitle>
+        <CardDescription>把最近一次 connect/disconnect 的结果直接放到总览里。</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <Badge variant={summary.tone === "secondary" ? "outline" : summary.tone} className="rounded-md">
+            {summary.headline}
+          </Badge>
+          <div
+            className={cn(
+              "inline-flex w-fit items-center rounded-md border px-3 py-1 text-sm font-medium",
+              toneSet.icon,
+            )}
+          >
+            {summary.time}
+          </div>
+        </div>
+        <p className="text-sm leading-6 text-muted-foreground">{summary.detail}</p>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" onClick={onConnect} disabled={pendingAction === "连接远程 ADB"}>
+            {pendingAction === "连接远程 ADB" ? "连接中..." : "连接远程 ADB"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={onDisconnect} disabled={pendingAction === "断开远程 ADB"}>
+            {pendingAction === "断开远程 ADB" ? "断开中..." : "断开远程 ADB"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={onRefresh}>
+            刷新状态
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
