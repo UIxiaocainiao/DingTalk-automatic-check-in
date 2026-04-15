@@ -3,10 +3,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
-const isElectronBuild = process.env.VITE_ELECTRON_BUILD === "1";
-
 export default defineConfig({
-  base: isElectronBuild ? "./" : "/",
+  base: "/",
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

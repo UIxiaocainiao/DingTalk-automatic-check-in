@@ -28,7 +28,7 @@ except ModuleNotFoundError:  # pragma: no cover - import path depends on entrypo
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
 SCRIPT_PATH = BASE_DIR / "dingtalk_random_scheduler.py"
-INSTALL_PLATFORM_TOOLS_SCRIPT = PROJECT_DIR / "scripts/install_platform_tools.py"
+INSTALL_PLATFORM_TOOLS_SCRIPT_ENV = "DINGTALK_INSTALL_PLATFORM_TOOLS_SCRIPT"
 CONFIG_FILE = Path(os.environ.get("DINGTALK_CONSOLE_CONFIG_FILE", scheduler.DEFAULT_CONFIG_FILE))
 PROCESS_FILE = Path(
     os.environ.get(
@@ -77,6 +77,30 @@ class ApiError(RuntimeError):
         super().__init__(message)
         self.status_code = status_code
         self.message = message
+
+
+def resolve_install_platform_tools_script() -> Path:
+    env_script = str(os.environ.get(INSTALL_PLATFORM_TOOLS_SCRIPT_ENV, "")).strip()
+    candidates = []
+    if env_script:
+        candidates.append(Path(env_script).expanduser())
+    candidates.extend(
+        [
+            BASE_DIR / "install_platform_tools.py",
+            PROJECT_DIR / "scripts/install_platform_tools.py",
+            Path.cwd() / "scripts/install_platform_tools.py",
+        ]
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    checked_paths = "\n".join(f"- {path}" for path in candidates)
+    raise ApiError(
+        500,
+        "安装脚本不存在，请确认部署中包含 install_platform_tools.py。\n"
+        f"已检查路径：\n{checked_paths}",
+    )
 
 
 def format_beijing_datetime_label(value: datetime | None) -> str:
@@ -1195,12 +1219,11 @@ def disconnect_remote_adb() -> dict[str, Any]:
 
 
 def install_adb() -> dict[str, Any]:
-    if not INSTALL_PLATFORM_TOOLS_SCRIPT.exists():
-        raise ApiError(500, f"安装脚本不存在：{INSTALL_PLATFORM_TOOLS_SCRIPT}")
+    install_script = resolve_install_platform_tools_script()
 
     result = subprocess.run(
-        [sys.executable, str(INSTALL_PLATFORM_TOOLS_SCRIPT)],
-        cwd=str(PROJECT_DIR),
+        [sys.executable, str(install_script)],
+        cwd=str(install_script.parent),
         capture_output=True,
         text=True,
         check=False,

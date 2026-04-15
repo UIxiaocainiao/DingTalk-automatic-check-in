@@ -743,7 +743,7 @@ function App() {
   const [recordFilter, setRecordFilter] = useState({ date: "", type: "", status: "" });
   const [recordPage, setRecordPage] = useState(1);
   const [recordPageSize, setRecordPageSize] = useState(10);
-  const [activeGuidePanel, setActiveGuidePanel] = useState("desktop");
+  const [activeGuidePanel, setActiveGuidePanel] = useState("console");
 
   const quickActionSet = useMemo(
     () =>
@@ -3155,9 +3155,9 @@ function App() {
                               <GuideAccordionItem
                                 title="控制台操作"
                                 description="ADB 安装、状态刷新和自检都可在网页端触发，安装实际在云服务器执行。"
-                                open={activeGuidePanel === "desktop"}
+                                open={activeGuidePanel === "console"}
                                 onToggle={() =>
-                                  setActiveGuidePanel((current) => (current === "desktop" ? "" : "desktop"))
+                                  setActiveGuidePanel((current) => (current === "console" ? "" : "console"))
                                 }
                               >
 

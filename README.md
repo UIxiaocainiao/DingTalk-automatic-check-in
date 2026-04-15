@@ -1,6 +1,6 @@
-# DingTalk Hybrid Desktop 自动打卡助手
+# DingTalk Web 自动打卡控制台
 
-基于 `Electron + React + Python + ADB` 的钉钉自动打卡桌面应用，支持上午/下午双时间窗口随机执行、工作日校验、设备连接管理、日志与记录管理。
+基于 `React + Python + ADB` 的钉钉自动打卡网页控制台，支持上午/下午双时间窗口随机执行、工作日校验、设备连接管理、日志与记录管理。
 
 ## 功能亮点
 
@@ -8,8 +8,6 @@
 - 状态持久化：重启后保留排期和完成状态，避免同一窗口重复执行。
 - 多种设备接入：支持本地 USB ADB 与远程 ADB/TCP。
 - 可视化控制台：支持启动/停止调度、自检、试运行、日志与记录查看。
-- 桌面化能力：Electron 托盘、后台运行、安装包分发。
-- 自动发布：推送 `v*` 标签后自动构建 macOS/Windows 安装包并上传 Release。
 
 ## 技术架构
 
@@ -25,28 +23,18 @@ Scheduler (backend/dingtalk_random_scheduler.py)
   ├─ 随机排期
   ├─ 工作日判断
   └─ 打卡记录持久化
-Desktop Shell (desktop/*)
-  ├─ Electron 主进程
-  ├─ 后端拉起与守护
-  └─ 托盘与本地运行时桥接
 ```
 
 ## 项目结构
 
 ```text
 DingTalkHybridDesktop/
-├── desktop/                           # Electron 桌面端
-│   ├── main/
-│   ├── preload/
-│   ├── assets/
-│   ├── package.json
-│   └── electron-builder.json
 ├── frontend/                          # React 控制台
 ├── backend/                           # Python API + 调度器
 ├── scripts/                           # 辅助脚本
 ├── docs/                              # 项目文档
-├── .github/workflows/                 # CI/CD（含 release-desktop.yml）
-├── package.json                       # workspace 入口
+├── .github/workflows/                 # CI/CD
+├── package.json                       # workspace 入口（仅 frontend）
 └── README.md
 ```
 
@@ -66,80 +54,15 @@ git clone git@github.com:UIxiaocainiao/DingTalkHybridDesktop.git
 cd DingTalkHybridDesktop
 ```
 
-### 2. 启动桌面联调模式（推荐）
+### 2. 启动 Web 控制台（推荐）
 
 ```bash
 npm install --prefix frontend
-npm install --prefix desktop
-npm run dev --prefix desktop
-```
-
-该模式会同时启动：
-
-- 前端：`http://127.0.0.1:5173`
-- 后端：`http://127.0.0.1:8000`
-- Electron 桌面窗口
-
-### 3. 仅启动 Web 模式（可选）
-
-```bash
 python3 backend/api_server.py
-npm install --prefix frontend
 npm run dev --prefix frontend
 ```
 
-### 4. 构建桌面安装包
-
-```bash
-npm run dist --prefix desktop
-```
-
-产物目录：`desktop/release/`
-
-## GitHub Release 自动发布
-
-### 工作流说明
-
-- 工作流文件：`.github/workflows/release-desktop.yml`
-- 触发条件：推送标签 `v*`（例如 `v1.0.1`）
-- 产物：
-  - macOS：`.dmg`
-  - Windows：`.exe`
-
-### 发布步骤
-
-```bash
-git tag v1.0.2
-git push origin v1.0.2
-```
-
-发布完成后，到 GitHub Actions 查看 `Release Desktop Installers`，安装包会自动上传到对应 Release。
-
-## macOS 首次安装与权限授权
-
-当你从 Release 下载并安装 `DingTalkHybridDesktop.app` 后，如果出现：
-
-`“DingTalkHybridDesktop”已损坏，无法打开。你应该将它移到废纸篓。`
-
-通常是 macOS Gatekeeper 对未公证应用的拦截，不是应用文件真的损坏。可执行以下修复：
-
-```bash
-xattr -dr com.apple.quarantine /Applications/DingTalkHybridDesktop.app
-xattr -dr com.apple.provenance /Applications/DingTalkHybridDesktop.app || true
-codesign --force --deep --sign - /Applications/DingTalkHybridDesktop.app
-open -a /Applications/DingTalkHybridDesktop.app
-```
-
-首次启动后，请按系统弹窗授权；若未自动弹窗，可手动到：
-
-- 系统设置 → 隐私与安全性 → 辅助功能
-- 系统设置 → 隐私与安全性 → 自动化
-- 系统设置 → 通知（可选，用于成功/失败通知）
-
-说明：
-
-- 当前 Release 默认未做 Apple Developer ID 签名与 Notarization，因此首次安装可能需要上述处理。
-- 若要彻底消除此提示，需在发布流程中接入 Developer ID 签名和 Apple Notarization。
+访问：`http://127.0.0.1:5173`
 
 ## Scheduler CLI 常用命令
 
@@ -253,7 +176,6 @@ python3 backend/test_api_integrity.py
 - 设备 `unauthorized`：在手机上重新确认 USB 调试授权。
 - 多设备冲突：在配置中显式设置 `serial`。
 - 前端请求失败：确认 `backend/api_server.py` 正在运行，或检查 `VITE_API_BASE_URL`。
-- Release 无安装包：确认推送的是 `v*` 标签，并检查 Actions 中 `Release Desktop Installers` 是否成功。
 
 ## 合规声明
 
