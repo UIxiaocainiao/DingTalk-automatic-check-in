@@ -517,6 +517,7 @@ function getPendingWindowSummary(dashboard, windowValues) {
       : nextWindow.selectedAt;
 
     return {
+      label: `下一次${windowLabel}执行`,
       value: `${dayLabel}${windowLabel}待执行`,
       time: timeLabel,
       detail: `${nextWindow.title}时间范围 ${nextWindow.start}-${nextWindow.end}，计划执行于 ${nextWindow.selectedAt}`,
@@ -525,6 +526,7 @@ function getPendingWindowSummary(dashboard, windowValues) {
   }
 
   return {
+    label: "下一次执行",
     value: "等待后端排期",
     time: `${windowValues["上午窗口-selected"]} / ${windowValues["下午窗口-selected"]}`,
     detail: "默认按时间窗口抽取，也支持手动精确指定到秒。",
@@ -998,7 +1000,6 @@ function App() {
   }, [dashboard]);
 
   const metrics = useMemo(() => {
-    const morningWindow = getWindowFromDashboard(dashboard, "morning");
     const deviceState = dashboard?.device;
     const workdayState = dashboard?.workday;
     let deviceLabel = "待处理";
@@ -1025,10 +1026,11 @@ function App() {
         icon: Smartphone,
       },
       {
-        label: "下一次上午执行",
-        value: morningWindow?.selected ?? windowValues["上午窗口-selected"],
-        note: morningWindow?.selectedAtLabel || "默认按时间范围抽取，也可以手动精确指定到秒。",
+        label: pendingWindowSummary.label,
+        value: pendingWindowSummary.time,
+        note: pendingWindowSummary.detail,
         icon: AlarmClockCheck,
+        tone: pendingWindowSummary.tone,
       },
       {
         label: "最近成功执行",
@@ -1040,7 +1042,7 @@ function App() {
         icon: BadgeCheck,
       },
     ];
-  }, [dashboard, latestSuccessSummary.headline, windowValues]);
+  }, [dashboard, latestSuccessSummary.headline, pendingWindowSummary]);
 
   const statusRows = useMemo(() => {
     const morningWindow = getWindowFromDashboard(dashboard, "morning");
@@ -1177,8 +1179,16 @@ function App() {
     }
 
     const remoteAdbTarget = String(configValues["远程 ADB 目标 remote_adb_target"] || "").trim();
-    if (remoteAdbTarget && !/^[^:\s]+:\d{1,5}$/.test(remoteAdbTarget)) {
-      add("远程 ADB 目标 remote_adb_target", "远程 ADB 目标格式应为 host:port，例如 192.168.1.8:5555。");
+    if (remoteAdbTarget) {
+      const matched = remoteAdbTarget.match(/^([^:\s]+):(\d{1,5})$/);
+      if (!matched) {
+        add("远程 ADB 目标 remote_adb_target", "远程 ADB 目标格式应为 host:port，例如 192.168.1.8:5555。");
+      } else {
+        const port = Number(matched[2]);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          add("远程 ADB 目标 remote_adb_target", "远程 ADB 端口范围必须在 1-65535。");
+        }
+      }
     }
 
     windowsData.forEach((item) => {
@@ -1236,7 +1246,7 @@ function App() {
         tone: "warning",
         title: "当前优先项：先恢复后端连接",
         detail: "前端无法读取后端真实状态，当前页面数据可能不是最新结果。",
-        chips: ["启动 backend/api_server.py", "恢复后自动拉取状态", "不要在离线状态下误判结果"],
+        chips: ["执行 npm run backend:start", "恢复后自动拉取状态", "不要在离线状态下误判结果"],
       };
     }
 
@@ -1816,7 +1826,7 @@ function App() {
   const wizardSteps = useMemo(() => {
     const steps = [];
     const adbInstallHint = deviceState?.adbInstallHint || "在网页端点击“在线安装 ADB”";
-    const backendCommand = "python3 backend/api_server.py";
+    const backendCommand = "npm run backend:start";
     const deviceCount = deviceState?.deviceCount ?? 0;
     const onlineCount = deviceState?.onlineCount ?? 0;
     const unauthorizedCount = deviceState?.unauthorizedCount ?? 0;
@@ -1977,7 +1987,7 @@ function App() {
           icon: TriangleAlert,
           tone: "warning",
           title: "后端离线，动作请求暂不可用",
-          detail: "当前按钮仍可见，但所有需要后端响应的动作都会失败。先恢复 api_server.py。",
+          detail: "当前按钮仍可见，但所有需要后端响应的动作都会失败。先执行 npm run backend:start。",
           actionLabel: "刷新状态",
           onAction: () => handleAction("刷新设备状态"),
         }
@@ -2181,7 +2191,7 @@ function App() {
                           <CardContent className="space-y-3 text-sm text-foreground">
                             <p>{apiError}</p>
                             <p className="text-muted-foreground">
-                              启动命令：`python3 backend/api_server.py`
+                              启动命令：`npm run backend:start`
                             </p>
                           </CardContent>
                         </Card>
@@ -3290,7 +3300,7 @@ function App() {
                                   </div>
 
                                   <p className="text-sm leading-6 text-muted-foreground">
-                                    两种方式的共同前提都是：手机和运行 ADB 的那台机器必须网络可达；如果地址或端口变化，需要同步更新 `remote_adb_target`。
+                                    两种方式的共同前提都是：手机和运行 ADB 的那台机器必须网络可达；如果地址或端口变化，需要同步更新 `remote_adb_target`。公网环境下还要确认设备侧端口映射、云服务器安全组/防火墙放行规则已经生效。
                                   </p>
                                 </div>
                               </GuideAccordionItem>
@@ -3311,7 +3321,7 @@ function App() {
                                   <li><strong>看不到设备：</strong> 先换数据线、USB 口，确认手机不是“仅充电”模式。</li>
                                   <li><strong>设备显示 unauthorized：</strong> 说明手机还没点授权，解锁屏幕后重新插拔或重新授权。</li>
                                   <li><strong>多台设备同时在线：</strong> 需要在“任务配置”里填写 serial，绑定目标设备。</li>
-                                  <li><strong>远程 ADB 连不上：</strong> 先检查 remote_adb_target 是否为 `host:port`，以及目标网络和端口是否可达。</li>
+                                  <li><strong>远程 ADB 连不上：</strong> 先检查 remote_adb_target 是否为 `host:port`（端口 1-65535），再确认公网端口映射与云服务器安全组放行。</li>
                                   <li><strong>ADB 已安装但还是失败：</strong> 可先点“重启 ADB”，再重新刷新状态。</li>
                                 </ul>
                               </div>
@@ -3997,7 +4007,7 @@ function SummaryRow({ label, value, emphasized = false, tone = null }) {
 }
 
 function MetricCard({ item, delay }) {
-  const tone = statusTone(item.value);
+  const tone = item.tone ?? statusTone(item.value);
   const toneSet = toneClasses(tone);
   return (
     <Card className={cn("fade-up card-hover", toneSet.panel)} style={{ "--delay": delay }}>

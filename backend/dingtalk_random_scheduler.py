@@ -19,6 +19,7 @@ import random
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -328,22 +329,120 @@ def run_adb(adb_bin: str, serial: str | None, args: Iterable[str]) -> subprocess
     return subprocess.run(command, capture_output=True, text=True, check=True)
 
 
-def adb_connect(adb_bin: str, target: str) -> str:
+def normalize_remote_adb_target(target: str) -> tuple[str, str, int]:
     normalized = target.strip()
     if not normalized:
         raise RuntimeError("Remote ADB target is empty.")
-    result = subprocess.run([adb_bin, "connect", normalized], capture_output=True, text=True, check=False)
-    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip()).strip()
-    lowered = output.lower()
-    if result.returncode != 0 or "failed" in lowered or "cannot" in lowered or "unable" in lowered:
-        raise RuntimeError(output or f"adb connect failed: {normalized}")
-    return output or f"connected to {normalized}"
+    if ":" not in normalized:
+        raise RuntimeError("Remote ADB target format invalid. Expected host:port.")
+
+    host, raw_port = normalized.rsplit(":", 1)
+    host = host.strip()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1].strip()
+    if not host:
+        raise RuntimeError("Remote ADB target format invalid. Host is empty.")
+
+    try:
+        port = int(raw_port.strip())
+    except ValueError as exc:
+        raise RuntimeError("Remote ADB target format invalid. Port must be an integer.") from exc
+    if port < 1 or port > 65535:
+        raise RuntimeError("Remote ADB target format invalid. Port must be in 1-65535.")
+    return normalized, host, port
+
+
+def probe_remote_tcp_endpoint(host: str, port: int, timeout_seconds: float = 3.0) -> None:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_seconds):
+            return
+    except OSError as exc:
+        raise RuntimeError(f"TCP probe failed for {host}:{port}: {exc}") from exc
+
+
+def list_device_statuses_with_bin(adb_bin: str) -> list[DeviceStatus]:
+    result = subprocess.run(
+        [adb_bin, "devices", "-l"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return parse_device_statuses(result.stdout)
+
+
+def get_device_status_with_bin(adb_bin: str, serial: str) -> DeviceStatus | None:
+    for status in list_device_statuses_with_bin(adb_bin):
+        if status.serial == serial:
+            return status
+    return None
+
+
+def adb_connect(
+    adb_bin: str,
+    target: str,
+    *,
+    retries: int = 3,
+    retry_interval_seconds: float = 1.0,
+    probe_timeout_seconds: float = 3.0,
+) -> str:
+    normalized, host, port = normalize_remote_adb_target(target)
+    max_attempts = max(1, retries)
+    failure_details: list[str] = []
+
+    try:
+        existing_status = get_device_status_with_bin(adb_bin, normalized)
+    except subprocess.CalledProcessError:
+        existing_status = None
+    if existing_status and existing_status.state == "device":
+        return f"already connected to {normalized}"
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            probe_remote_tcp_endpoint(host, port, timeout_seconds=probe_timeout_seconds)
+        except Exception as exc:
+            failure_details.append(f"attempt {attempt}: {exc}")
+            if attempt < max_attempts:
+                time.sleep(retry_interval_seconds)
+            continue
+
+        subprocess.run([adb_bin, "disconnect", normalized], capture_output=True, text=True, check=False)
+        result = subprocess.run([adb_bin, "connect", normalized], capture_output=True, text=True, check=False)
+        output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip()).strip()
+        lowered = output.lower()
+        connected_status: DeviceStatus | None
+        try:
+            connected_status = get_device_status_with_bin(adb_bin, normalized)
+        except subprocess.CalledProcessError as exc:
+            connected_status = None
+            adb_devices_error = (exc.stderr or exc.stdout or str(exc)).strip()
+            if adb_devices_error:
+                failure_details.append(f"attempt {attempt}: adb devices check failed: {adb_devices_error}")
+
+        if connected_status and connected_status.state == "device":
+            return output or f"connected to {normalized}"
+        if connected_status and connected_status.state == "unauthorized":
+            raise RuntimeError(
+                f"Remote ADB connected to {normalized}, but device is unauthorized. "
+                "Approve the wireless debugging authorization prompt on the phone."
+            )
+        if connected_status and connected_status.state == "offline":
+            failure_details.append(f"attempt {attempt}: {normalized} is offline after connect")
+        elif result.returncode != 0 or "failed" in lowered or "cannot" in lowered or "unable" in lowered:
+            failure_details.append(f"attempt {attempt}: {output or f'adb connect failed: {normalized}'}")
+        else:
+            failure_details.append(
+                f"attempt {attempt}: adb reported success but {normalized} is not in 'device' state yet"
+            )
+
+        if attempt < max_attempts:
+            time.sleep(retry_interval_seconds)
+
+    details = " | ".join(failure_details[-max_attempts:])
+    raise RuntimeError(details or f"adb connect failed: {normalized}")
 
 
 def adb_disconnect(adb_bin: str, target: str) -> str:
-    normalized = target.strip()
-    if not normalized:
-        raise RuntimeError("Remote ADB target is empty.")
+    normalized, _, _ = normalize_remote_adb_target(target)
     result = subprocess.run([adb_bin, "disconnect", normalized], capture_output=True, text=True, check=False)
     output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip()).strip()
     lowered = output.lower()
@@ -399,15 +498,11 @@ def parse_device_statuses(output: str) -> list[DeviceStatus]:
 
 
 def list_device_statuses() -> list[DeviceStatus]:
-    result = run_adb(ADB_BIN, None, ["devices", "-l"])
-    return parse_device_statuses(result.stdout)
+    return list_device_statuses_with_bin(ADB_BIN)
 
 
 def get_device_status(serial: str) -> DeviceStatus | None:
-    for status in list_device_statuses():
-        if status.serial == serial:
-            return status
-    return None
+    return get_device_status_with_bin(ADB_BIN, serial)
 
 
 def detect_single_device() -> str:

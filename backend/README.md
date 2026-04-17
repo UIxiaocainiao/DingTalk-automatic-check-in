@@ -7,5 +7,11 @@
 ## Current runtime
 
 ```bash
-python3 api_server.py --host 127.0.0.1 --port 8000
+npm start
+```
+
+## From workspace root
+
+```bash
+npm run backend:start
 ```

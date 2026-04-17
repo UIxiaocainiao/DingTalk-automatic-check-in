@@ -79,6 +79,22 @@ class ApiError(RuntimeError):
         self.message = message
 
 
+def parse_required_int_from_payload(
+    payload: dict[str, Any],
+    field_name: str,
+    *,
+    missing_message: str,
+    invalid_message: str,
+) -> int:
+    raw_value = payload.get(field_name)
+    if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+        raise ApiError(400, missing_message)
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ApiError(400, invalid_message) from exc
+
+
 def resolve_install_platform_tools_script() -> Path:
     env_script = str(os.environ.get(INSTALL_PLATFORM_TOOLS_SCRIPT_ENV, "")).strip()
     candidates = []
@@ -707,14 +723,28 @@ def summarize_remote_adb_error(message: str, target: str) -> str:
         return "远程 ADB 连接失败。"
     if "target is empty" in lowered:
         return "远程 ADB 目标为空：请先保存 remote_adb_target，例如 192.168.1.8:5555。"
+    if "format invalid" in lowered:
+        return "远程 ADB 目标格式错误：请使用 host:port，端口范围 1-65535。"
+    if "tcp probe failed" in lowered:
+        return (
+            f"远程 ADB 网络探测失败：当前服务器无法连到 {target}。"
+            "公网环境请确认设备侧端口映射、云服务器安全组/防火墙放行，以及目标地址可达。"
+        )
     if "connection refused" in lowered or "actively refused" in lowered:
-        return f"远程 ADB 被拒绝：{target} 端口未监听或目标未开启无线调试/ADB TCP。"
+        return (
+            f"远程 ADB 被拒绝：{target} 端口未监听或目标未开启无线调试/ADB TCP。"
+            "公网环境请确认端口映射已生效。"
+        )
     if "timed out" in lowered or "timeout" in lowered:
-        return f"远程 ADB 超时：无法在时限内连到 {target}，请检查网络与端口。"
+        return f"远程 ADB 超时：无法在时限内连到 {target}，请检查公网网络路径与端口策略。"
     if "no route to host" in lowered or "network is unreachable" in lowered:
         return f"远程 ADB 不可达：当前服务器无法访问 {target}。"
     if "unknown host" in lowered or "name or service not known" in lowered:
         return f"远程 ADB 目标无效：无法解析 {target}。"
+    if "unauthorized" in lowered:
+        return "远程 ADB 已连通但设备未授权：请在手机上确认无线调试授权弹窗。"
+    if "offline" in lowered:
+        return f"远程 ADB 已连接但设备处于 offline：建议重新连接 {target} 并刷新状态。"
     if "unable to connect" in lowered or "failed to connect" in lowered:
         return f"远程 ADB 连接失败：请检查 {target} 是否可达，且目标设备已开启无线调试/ADB TCP。"
     return normalized[:500]
@@ -1009,6 +1039,8 @@ def start_scheduler_process(mode: str) -> dict[str, Any]:
         raise ApiError(409, f"调度器已经在运行中，PID {current_state['pid']}。")
 
     config = load_console_config()
+    args = build_namespace(config, command=mode)
+    auto_connect_note = ensure_online_device_with_remote_adb(config, args, "启动任务")
     save_console_config(config)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1037,7 +1069,7 @@ def start_scheduler_process(mode: str) -> dict[str, Any]:
     )
     return {
         "message": "调度器已启动",
-        "detail": f"已启动 {mode} 模式，PID {process.pid}。",
+        "detail": " ".join(filter(None, [f"已启动 {mode} 模式，PID {process.pid}。", auto_connect_note])),
     }
 
 
@@ -1080,8 +1112,10 @@ def run_once() -> dict[str, Any]:
     apply_console_windows(config)
     args = build_namespace(config, command="run")
     scrcpy_note = ""
+    auto_connect_note = ""
 
     try:
+        auto_connect_note = ensure_online_device_with_remote_adb(config, args, "试运行")
         scheduler.ADB_BIN = scheduler.resolve_binary("adb", args.adb_bin, scheduler.ADB_CANDIDATES)
         serial = args.serial or scheduler.detect_single_device()
         status = scheduler.get_device_status(serial)
@@ -1095,6 +1129,8 @@ def run_once() -> dict[str, Any]:
                 scrcpy_note = "scrcpy 已拉起。"
         except Exception as exc:
             scrcpy_note = f"scrcpy 未启动: {exc}"
+    except ApiError:
+        raise
     except subprocess.CalledProcessError as exc:
         raise ApiError(400, scheduler.describe_process_error(exc)) from exc
     except Exception as exc:
@@ -1133,7 +1169,9 @@ def run_once() -> dict[str, Any]:
 
     return {
         "message": "试运行已完成",
-        "detail": " ".join(filter(None, [f"设备 {serial} 已执行一次手动动作链路。", scrcpy_note])),
+        "detail": " ".join(
+            filter(None, [f"设备 {serial} 已执行一次手动动作链路。", auto_connect_note, scrcpy_note])
+        ),
     }
 
 
@@ -1158,6 +1196,52 @@ def restart_adb() -> dict[str, Any]:
     }
 
 
+def connect_remote_adb_with_recovery(adb_bin: str, target: str) -> tuple[str, bool]:
+    try:
+        return scheduler.adb_connect(adb_bin, target), False
+    except Exception as first_exc:
+        restart_output = scheduler.restart_adb_server(adb_bin)
+        try:
+            retry_output = scheduler.adb_connect(adb_bin, target)
+        except Exception as second_exc:
+            raise RuntimeError(
+                f"{first_exc}; retry after adb restart failed: {second_exc}"
+            ) from second_exc
+
+        merged_output = " ".join(part for part in (restart_output, retry_output) if part).strip()
+        return merged_output or retry_output, True
+
+
+def ensure_online_device_with_remote_adb(config: dict[str, Any], args: argparse.Namespace, action_label: str) -> str:
+    target = str(config.get("remote_adb_target") or "").strip()
+    target_name = str(config.get("remote_adb_target_name") or "").strip()
+
+    try:
+        adb_bin = scheduler.resolve_binary("adb", args.adb_bin, scheduler.ADB_CANDIDATES)
+    except Exception as exc:
+        raise ApiError(400, f"ADB 不可用：{exc}") from exc
+
+    scheduler.ADB_BIN = adb_bin
+    statuses = scheduler.list_device_statuses()
+    if any(item.state == "device" for item in statuses):
+        return ""
+
+    if not target:
+        return ""
+
+    try:
+        output, used_recovery = connect_remote_adb_with_recovery(adb_bin, target)
+    except Exception as exc:
+        detail = summarize_remote_adb_error(str(exc), target)
+        remember_remote_adb_target(target, target_name)
+        record_remote_adb_status(target, "connect", False, detail)
+        raise ApiError(409, f"{action_label}前未检测到在线设备，且远程 ADB 自动连接失败：{detail}") from exc
+
+    remember_remote_adb_target(target, target_name)
+    record_remote_adb_status(target, "connect", True, output)
+    return f"{target_name + ' / ' if target_name else ''}{target} 已自动连通。{'（已自动重启 ADB 后重试）' if used_recovery else ''}"
+
+
 def connect_remote_adb() -> dict[str, Any]:
     config = load_console_config()
     args = build_namespace(config, command="status")
@@ -1172,19 +1256,20 @@ def connect_remote_adb() -> dict[str, Any]:
         raise ApiError(400, f"ADB 不可用：{exc}") from exc
 
     try:
-        output = scheduler.adb_connect(adb_bin, target)
+        output, used_recovery = connect_remote_adb_with_recovery(adb_bin, target)
     except Exception as exc:
         detail = summarize_remote_adb_error(str(exc), target)
         remember_remote_adb_target(target, target_name)
         record_remote_adb_status(target, "connect", False, detail)
         raise ApiError(500, detail) from exc
 
+    detail = f"{output}{'（已自动重启 ADB 后重试）' if used_recovery else ''}"
     remember_remote_adb_target(target, target_name)
-    record_remote_adb_status(target, "connect", True, output)
+    record_remote_adb_status(target, "connect", True, detail)
 
     return {
         "message": "远程 ADB 已连接",
-        "detail": output,
+        "detail": detail,
     }
 
 
@@ -1403,7 +1488,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                     return
                 elif path == "/api/checkin-records/delete":
                     # POST for deleting records by index
-                    index = int(payload.get("index") or -1)
+                    index = parse_required_int_from_payload(
+                        payload,
+                        "index",
+                        missing_message="缺少记录索引 index。",
+                        invalid_message="记录索引 index 必须是整数。",
+                    )
                     records = read_checkin_records()
                     if 0 <= index < len(records):
                         deleted = records.pop(index)
