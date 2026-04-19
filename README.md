@@ -1,220 +1,256 @@
-# DingTalk Web 自动打卡控制台
+# DingTalkHybridDesktop
 
-基于 `React + Python + ADB` 的钉钉自动打卡网页控制台，支持上午/下午双时间窗口随机执行、工作日校验、设备连接管理、日志与记录管理。
+面向个人与小团队的钉钉自动打卡 Web 控制台，基于 `React + Python + ADB`，支持本地 USB 与远程 ADB/TCP 接入、双窗口随机调度、工作日校验、日志与记录管理，以及公网场景下的自动重连与保活。
 
-## 功能亮点
+## 项目价值
 
-- 双窗口随机调度：上午、下午独立配置，自动抽取下一次执行时间。
-- 状态持久化：重启后保留排期和完成状态，避免同一窗口重复执行。
-- 多种设备接入：支持本地 USB ADB 与远程 ADB/TCP。
-- 可视化控制台：支持启动/停止调度、自检、试运行、日志与记录查看。
+- 降低人工维护成本：把“设备连接、排期、执行、回看”统一到一个控制台。
+- 适配真实生产场景：支持云端部署、远程 ADB 自动连接、断线重试与 systemd 保活。
+- 减少误操作风险：通过自检、运行状态可视化、打卡记录持久化，提升可观测性。
 
-## 技术架构
+## 当前运行形态（重要）
+
+- 现网后端入口是 `backend/api_server.py`（Python）。
+- 调度核心在 `backend/dingtalk_random_scheduler.py`（Python）。
+- `backend/src/**` 是 Node 分层迁移骨架，当前不参与生产运行。
+
+## 核心能力
+
+- 双时间窗口随机执行：上午/下午独立时间段随机。
+- 工作日判断：支持在线工作日 API 校验与开关控制。
+- 状态持久化：重启后保留排期与完成状态，避免重复打卡。
+- 设备接入：支持 USB ADB、远程 ADB/TCP。
+- 公网稳定性增强：
+  - 仪表盘自动尝试远程 ADB 连接（可配置冷却时间）。
+  - `remote_adb_keepalive.sh` 持续保活。
+  - systemd 一键安装模板。
+- 可视化运维：配置保存、立即执行、自检、日志和记录查看。
+
+## 架构概览
 
 ```text
-Frontend (React/Vite)
-  └─ /api/*
+Frontend (frontend, React + Vite)
+  └── 调用 /api/*
+
 Backend API (backend/api_server.py)
-  ├─ 配置读写
-  ├─ 调度进程管理（start/stop/run-once）
-  └─ 健康检查与记录管理
+  ├── 配置读写
+  ├── 调度进程控制（start/stop/run-once/reroll/doctor）
+  ├── 远程 ADB 动作与诊断（connect/disconnect/diagnose）
+  └── 仪表盘聚合与记录管理
+
 Scheduler (backend/dingtalk_random_scheduler.py)
-  ├─ ADB 设备交互
-  ├─ 随机排期
-  ├─ 工作日判断
-  └─ 打卡记录持久化
+  ├── ADB 设备状态探测与执行
+  ├── 随机排期与状态持久化
+  ├── 工作日判断
+  └── 打卡记录写入
 ```
 
-## 项目结构
+## 快速开始（本地）
 
-```text
-DingTalkHybridDesktop/
-├── frontend/                          # React 控制台
-├── backend/                           # Python API + 调度器
-├── scripts/                           # 辅助脚本
-├── docs/                              # 项目文档
-├── .github/workflows/                 # CI/CD
-├── package.json                       # workspace 入口（仅 frontend）
-└── README.md
-```
-
-## 环境要求
+### 1) 环境要求
 
 - Python `3.11+`
 - Node.js `20+`
-- 已安装并可用的 ADB（或通过控制台“在线安装 ADB”）
 - Android 设备已开启 USB 调试并完成授权
 
-## 快速开始
-
-### 1. 克隆仓库
+### 2) 拉取并启动
 
 ```bash
 git clone git@github.com:UIxiaocainiao/DingTalkHybridDesktop.git
 cd DingTalkHybridDesktop
-```
-
-### 2. 启动 Web 控制台（推荐）
-
-```bash
 npm install
 npm run dev
 ```
 
-访问：`http://127.0.0.1:5173`
+默认地址：
 
-说明：
+- 前端：`http://127.0.0.1:5173`
+- 后端：`http://127.0.0.1:8000`
 
-- `npm run dev` 会同时启动前端（Vite）和后端（Python API）。
-- 如需单独启动：`npm run dev:frontend` / `npm run dev:backend`。
-
-## Scheduler CLI 常用命令
+### 3) 快速健康检查
 
 ```bash
-# 启动调度（默认）
+curl -sS http://127.0.0.1:8000/api/health
+```
+
+预期返回包含 `"ok": true`。
+
+## 常用命令
+
+### Workspace 命令
+
+```bash
+# 同时启动前后端
+npm run dev
+
+# 单独启动
+npm run dev:frontend
+npm run dev:backend
+
+# 构建前端
+npm run build
+```
+
+### Docker Compose（可选）
+
+```bash
+docker compose up --build
+```
+
+默认暴露：
+
+- `5173`（frontend）
+- `8000`（backend）
+
+### Scheduler CLI
+
+```bash
+# 运行调度
 python3 backend/dingtalk_random_scheduler.py run
 
 # 调试模式
 python3 backend/dingtalk_random_scheduler.py debug
 
-# 查看状态
+# 状态/排期
 python3 backend/dingtalk_random_scheduler.py status
-
-# 查看排期
 python3 backend/dingtalk_random_scheduler.py schedule
 
-# 环境自检
+# 自检
 python3 backend/dingtalk_random_scheduler.py doctor
 
-# 手动指定下一次执行时间
+# 手动设置下次执行时间
 python3 backend/dingtalk_random_scheduler.py set-next --window morning --time 09:06:30
 python3 backend/dingtalk_random_scheduler.py set-next --window evening --time 18:08:15
 ```
 
-## Web API 概览
+### PlaybackE2E 联动（可选）
 
-| Method | Path | Description |
+```bash
+# 默认关联目录: ../PlaybackE2E
+npm run playback:bootstrap
+npm run playback:start
+npm run playback:status
+npm run playback:stop
+```
+
+如目录不在默认位置，可设置：`PLAYBACK_DIR=/absolute/path/to/PlaybackE2E`。
+
+## API 概览
+
+| Method | Path | 用途 |
 |---|---|---|
 | GET | `/api/health` | 健康检查 |
-| GET | `/api/dashboard` | 控制台聚合数据 |
+| GET | `/api/dashboard` | 获取控制台聚合数据 |
 | GET | `/api/checkin-records` | 获取打卡记录 |
-| POST | `/api/config` | 保存配置 |
-| POST | `/api/actions/reroll` | 重新抽取执行时间 |
-| POST | `/api/actions/doctor` | 执行后端自检 |
+| POST | `/api/config` | 保存配置与窗口信息 |
+| POST | `/api/actions/reroll` | 重新抽取随机执行时间 |
+| POST | `/api/actions/doctor` | 后端自检 |
+| POST | `/api/actions/adb-install` | 在线安装 Android platform-tools |
+| POST | `/api/actions/adb-connect` | 连接远程 ADB |
+| POST | `/api/actions/adb-disconnect` | 断开远程 ADB |
+| POST | `/api/actions/adb-diagnose` | 远程链路诊断（DNS/TCP/adb） |
+| POST | `/api/actions/remote-adb-targets/delete` | 删除历史远程目标 |
 | POST | `/api/actions/adb-restart` | 重启 ADB server |
 | POST | `/api/actions/run-once` | 立即执行一次 |
 | POST | `/api/actions/start` | 启动调度 |
 | POST | `/api/actions/stop` | 停止调度 |
+| POST | `/api/checkin-records` | 添加手动记录 |
+| POST | `/api/checkin-records/delete` | 删除指定记录 |
 
-## 配置文件
+完整字段说明见 [docs/api.md](./docs/api.md)。
 
-默认配置文件：`backend/runtime/console-config.json`
+## 配置与环境变量
 
-示例：
+### 1) 前端环境变量
 
-```json
-{
-  "serial": "",
-  "remote_adb_target": "",
-  "remote_adb_target_name": "",
-  "package": "com.alibaba.android.rimet",
-  "app_label": "钉钉",
-  "delay_after_launch": 5,
-  "poll_interval": 5,
-  "scrcpy_launch_cooldown": 15,
-  "state_file": "backend/logs/dingtalk-random-scheduler.state.json",
-  "workday_api_url": "https://holiday.dreace.top?date={date}",
-  "workday_api_timeout_ms": 5000,
-  "enable_scrcpy_watch": false,
-  "notify_on_success": false,
-  "enable_workday_check": true,
-  "adb_bin": "",
-  "scrcpy_bin": "",
-  "windows": {
-    "morning": { "start": "09:05", "end": "09:10" },
-    "evening": { "start": "18:05", "end": "18:15" }
-  }
-}
-```
+文件：`frontend/.env`（开发）或 `frontend/.env.production`（生产）
 
-## 关键环境变量
+- `VITE_API_BASE_URL`：后端 API 地址。
+- `VITE_PLAYBACK_API_BASE_URL`：PlaybackE2E API 地址，默认 `http://127.0.0.1:4000`。
 
-### Backend API
+### 2) 后端环境变量
 
-- `HOST`（默认 `127.0.0.1`）
-- `PORT`（默认 `8000`）
-- `DINGTALK_CONSOLE_CONFIG_FILE`
-- `DINGTALK_CONSOLE_PROCESS_FILE`
-- `DINGTALK_CONSOLE_LOG_FILE`
-- `DINGTALK_CONSOLE_ERR_LOG_FILE`
-- `DINGTALK_CONSOLE_CHECKIN_RECORDS_FILE`
+- `HOST` / `PORT`：API 监听地址与端口。
+- `DINGTALK_CONSOLE_CONFIG_FILE`：控制台配置文件路径。
+- `DINGTALK_CONSOLE_PROCESS_FILE`：调度进程状态文件路径。
+- `DINGTALK_CONSOLE_LOG_FILE` / `DINGTALK_CONSOLE_ERR_LOG_FILE`：运行日志路径。
+- `DINGTALK_CONSOLE_CHECKIN_RECORDS_FILE`：打卡记录文件路径。
+- `DINGTALK_REMOTE_ADB_STATUS_FILE`：远程 ADB 状态文件路径。
+- `DINGTALK_AUTO_REMOTE_ADB_CONNECT`：是否启用“无在线设备时自动连接远程 ADB”（默认开启）。
+- `DINGTALK_AUTO_REMOTE_ADB_CONNECT_COOLDOWN_SECONDS`：自动连接冷却秒数（默认 30，最小 5）。
+- `DINGTALK_PLATFORM_TOOLS_DIR`：platform-tools 安装目录（容器部署建议挂载持久卷）。
 
-### Scheduler
+### 3) 运行时配置文件
 
-- `DINGTALK_PLATFORM_TOOLS_DIR`
-- `DINGTALK_ADB_BIN`
-- `DINGTALK_SCRCPY_BIN`
+默认路径：`backend/runtime/console-config.json`  
+包含窗口时间、设备 serial、远程目标、工作日接口、adb/scrcpy 路径等字段。
 
-### Frontend
+## 生产部署与运维建议
 
-- `VITE_API_BASE_URL`
-- `VITE_PLAYBACK_API_BASE_URL`（默认 `http://127.0.0.1:4000`）
+### 1) 持久化运行时目录
 
-## PlaybackE2E 平级项目联动
+容器平台（如 Railway）建议挂载持久卷到 `/app/backend/runtime`，避免重建后丢失 `adb` 与运行态文件。
 
-左侧导航现已支持平级项目切换：
-
-- 自动钉钉打卡
-- 自动刷视频（PlaybackE2E）
-
-如需在本仓库内统一启动/检查 PlaybackE2E 相关服务，可使用：
+### 2) 启用远程 ADB 保活（推荐）
 
 ```bash
-# 安装 PlaybackE2E 前后端依赖
-npm run playback:bootstrap
-
-# 启动 PlaybackE2E 后台服务（frontend + backend）
-npm run playback:start
-
-# 查看运行状态
-npm run playback:status
-
-# 停止服务
-npm run playback:stop
+REMOTE_ADB_TARGET=192.168.1.8:5555 \
+ADB_BIN=/opt/dingtalk-automatic-check-in/backend/runtime/platform-tools/adb \
+bash scripts/remote_adb_keepalive.sh
 ```
 
-说明：
-
-- 默认查找目录：`../PlaybackE2E`
-- 可通过环境变量覆盖：`PLAYBACK_DIR=/absolute/path/to/PlaybackE2E`
-
-## 测试
-
-### API 完整性测试
+systemd 一键安装：
 
 ```bash
+bash scripts/install_remote_adb_keepalive_service.sh \
+  --target 192.168.1.8:5555 \
+  --workdir /opt/dingtalk-automatic-check-in \
+  --user www-data
+```
+
+### 3) 部署脚本入口
+
+- 一键部署到莱卡云：`bash scripts/deploy_laika_full.sh --help`
+- 公网验收检查：`bash scripts/verify_public_deploy.sh <frontend_domain> <api_domain>`
+- 代码拉取更新：`bash scripts/pull_repo.sh --repo-url <url> --branch main --target-dir <dir>`
+
+### 4) 运维脚本速查
+
+- `scripts/backup.sh`：打包备份 `backend/runtime`、`backend/logs` 与关键配置。
+- `scripts/build_frontend_for_public.sh <api_domain>`：写入生产 API 地址并构建前端。
+- `scripts/deploy_frontend_with_cache_refresh.sh <frontend_domain> <railway_domain>`：发布前端并刷新 CDN 缓存。
+
+## 故障排查（高频）
+
+| 现象 | 可能原因 | 建议处理 |
+|---|---|---|
+| `adb not found` | 未安装 platform-tools 或路径不可见 | 前端点“在线安装 ADB”，或执行 `python3 scripts/install_platform_tools.py`，或配置 `adb_bin` |
+| 设备 `unauthorized` | 手机未确认调试授权 | 手机端重新确认 USB/无线调试授权 |
+| `deviceCount: 0` | 云端无法触达手机 | 检查是否走通远程 ADB/TCP，确认 `remote_adb_target` 与网络可达 |
+| 刷新页面频繁断连 | 公网链路不稳定 | 开启自动重连 + 保活脚本 + 调整冷却时间 |
+| 前端请求失败 | API 地址或后端进程异常 | 核对 `VITE_API_BASE_URL`、`HOST/PORT`、`/api/health` 返回 |
+
+## 测试与验收
+
+```bash
+# API 端到端冒烟测试（临时文件隔离）
 python3 backend/test_api_integrity.py
 ```
 
-## 部署参考
+生产发布后可再执行公网验收脚本：`scripts/verify_public_deploy.sh`。
 
-- 后端部署说明：`docs/deploy.md`
-- API 说明：`docs/api.md`
-- 设备接入说明：`docs/adb-device-setup.md`
-- 公网远程 ADB 稳定接入：`docs/public-remote-adb-tunnel.md`
-- 项目结构说明：`docs/project-structure.md`
+## 文档索引
 
-## 常见问题
-
-- `adb not found`：在控制台点击“在线安装 ADB”，或在配置中指定 `adb_bin`。
-- 设备 `unauthorized`：在手机上重新确认 USB 调试授权。
-- 多设备冲突：在配置中显式设置 `serial`。
-- 前端请求失败：确认 `backend/api_server.py` 正在运行，或检查 `VITE_API_BASE_URL`。
+- API 细节：[docs/api.md](./docs/api.md)
+- 部署说明：[docs/deploy.md](./docs/deploy.md)
+- 设备准备：[docs/adb-device-setup.md](./docs/adb-device-setup.md)
+- 公网远程 ADB 稳定接入：[docs/public-remote-adb-tunnel.md](./docs/public-remote-adb-tunnel.md)
+- 项目结构说明：[docs/project-structure.md](./docs/project-structure.md)
 
 ## 合规声明
 
-本项目仅用于个人设备自动化与学习研究。请确保使用方式符合所在组织制度、平台规则和当地法律法规。
+本项目仅用于个人设备自动化与学习研究。请在使用前确认符合组织制度、平台规则及当地法律法规。
 
 ## License
 
-MIT License. See [LICENSE](./LICENSE).
+MIT，详见 [LICENSE](./LICENSE)。
